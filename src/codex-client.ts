@@ -32,7 +32,6 @@ export class CodexMcpClient implements CodexClientLike {
     const model = args.model ?? profile.model;
     if (model) codexArgs.model = model;
     if (args.cwd) codexArgs.cwd = args.cwd;
-    if (profile.profile) codexArgs.profile = profile.profile;
 
     if (profile.baseInstructions) codexArgs["base-instructions"] = profile.baseInstructions;
     if (profile.compactPrompt) codexArgs["compact-prompt"] = profile.compactPrompt;

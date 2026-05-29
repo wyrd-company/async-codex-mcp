@@ -13,9 +13,16 @@ const codexServerSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const callbacksSchema = z.object({
+  enabled: z.boolean().default(true),
+}).strict();
+
+const profileCallbacksSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+
 const profileSchema = z.object({
   description: z.string().optional(),
-  profile: z.string().optional(),
   model: z.string().optional(),
   approvalPolicy: z.string().default("never"),
   sandboxMode: z.string().default("danger-full-access"),
@@ -23,10 +30,12 @@ const profileSchema = z.object({
   compactPrompt: z.string().optional(),
   developerInstructions: z.string().optional(),
   config: unknownRecordSchema.default({}),
-});
+  callbacks: profileCallbacksSchema.optional(),
+}).strict();
 
 const configSchema = z.object({
   codex: codexServerSchema.default({ command: "codex", args: ["mcp-server"], env: {} }),
+  callbacks: callbacksSchema.default({ enabled: true }),
   tools: z.record(z.string(), profileSchema).default({
     codex: {
       description: "Run Codex asynchronously with danger-full-access sandboxing.",

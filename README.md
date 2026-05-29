@@ -45,6 +45,55 @@ tools:
     approvalPolicy: never
 ```
 
+Tool `config` values are passed through to the underlying Codex MCP `codex` tool as Codex config overrides. For example, this exposes a separate tool that routes through an Azure/OpenAI-compatible provider:
+
+```yaml
+tools:
+  codex-azure-review:
+    description: Ask Codex to review code using Azure OpenAI.
+    sandboxMode: read-only
+    approvalPolicy: never
+    model: gpt-5-codex
+    config:
+      model_provider: azure
+      model_providers:
+        azure:
+          name: Azure
+          base_url: https://YOUR_RESOURCE_NAME.openai.azure.com/openai
+          wire_api: responses
+          query_params:
+            api-version: 2025-04-01-preview
+          env_key: AZURE_OPENAI_API_KEY
+```
+
+Keep API keys in environment variables, not YAML. In the example above, Codex reads the provider key from `AZURE_OPENAI_API_KEY`.
+
+Callbacks are enabled by default. For each async session, this wrapper injects a session-scoped MCP server into Codex with two tools:
+
+- `async_codex_ask_user`: blocking; Codex sends `message` plus optional `context` and waits until the async session is answered.
+- `async_codex_notify_user`: non-blocking; Codex sends `message` plus optional `topic` and keeps working.
+
+Use `answer-session` to respond when `session-status` reports `waiting_for_input`.
+
+Disable callbacks globally:
+
+```yaml
+callbacks:
+  enabled: false
+```
+
+Or disable them for one configured tool:
+
+```yaml
+tools:
+  codex-review:
+    description: Ask Codex to review code without making edits.
+    sandboxMode: read-only
+    approvalPolicy: never
+    callbacks:
+      enabled: false
+```
+
 ## Run
 
 ```bash
@@ -58,6 +107,33 @@ Each configured profile becomes an MCP tool that accepts:
 - `cwd` (optional): working directory for the run.
 
 The profile tool returns JSON with an async `session_id` and `running` status. Use `session-status` with that id to inspect completion state. When complete, use `continue-session` with the async session id and a new `prompt` to resume the underlying Codex session.
+
+If a session is waiting for input, answer it with:
+
+```json
+{
+  "session_id": "<async-session-id>",
+  "message": "Use staging."
+}
+```
+
+## Claude Code plugin
+
+This repo includes a Claude Code marketplace at `.claude-plugin/marketplace.json` with an `async-codex-mcp` plugin. The plugin registers this repo's built MCP server using `dist/src/cli.js` and `fixtures/async-codex-mcp.yaml`.
+
+Before installing the plugin locally, build the server:
+
+```bash
+npm ci
+npm run build
+```
+
+Then add the marketplace from this repo root in Claude Code:
+
+```bash
+claude plugin marketplace add .
+claude plugin install async-codex-mcp@wyrd-company
+```
 
 ## Development
 

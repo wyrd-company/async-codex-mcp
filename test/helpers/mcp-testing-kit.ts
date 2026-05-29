@@ -125,5 +125,5 @@ export async function connect(server: Server) {
 }
 
 export function close(server: Server) {
-    server.close();
+    return server.close();
 }

@@ -1,0 +1,43 @@
+{
+  "name": "Async Codex MCP",
+  "image": "mcr.microsoft.com/devcontainers/base:noble",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Data and formats
+        "redhat.vscode-yaml",
+
+        //Stack
+        "ms-vscode.vscode-typescript-next",
+
+        // General productivity
+        "task.vscode-task"
+      ],
+      "settings": {
+        "window.title": "Async Codex MCP"
+      }
+    }
+  },
+
+  "containerEnv": {
+    "DEVCONTAINER_ID": "${devcontainerId}",
+    "HOST_HOSTNAME": "${localEnv:HOSTNAME}",
+    "WORKSPACE_HOME": "${containerWorkspaceFolder}",
+    "PROJECT": "Async Codex MCP"
+  },
+
+  "remoteEnv": {
+    "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
+  },
+
+  "shutdownAction": "none",
+
+  "runArgs": [
+    "--name", "async-codex-mcp-${devcontainerId}",
+    "-h", "${devcontainerId}",
+    "-l", "devcontainer.id=${devcontainerId}"
+  ]
+}

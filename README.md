@@ -1,40 +1,69 @@
 # async-codex-mcp
-Async codex MCP server
 
-## Problems
+Async Codex MCP server.
 
-The Codex CLI can be ran as an MCP server `codex mcp-server` which provides tools for other agent harnesses, like Claude, to use Codex as sub-agents.
+This package implements an MCP server that proxies a Codex MCP server and turns blocking `codex` calls into background sessions. Configured profile tools return immediately with an async session id; clients can poll `session-status`, receive `notifications/message` completion events, and resume completed Codex sessions with `continue-session`.
 
-The tool exposes two tools, `codex` and `codex-reply`.
+## Why
 
-**Problem 1**: `codex` is blocking. We need to transform this into a asynchronous process.
+The Codex CLI can run as an MCP server with `codex mcp-server`, exposing blocking `codex` and `codex-reply` tools. This server wraps those tools to:
 
-The `codex` tool also provides a number of parameters for how to call codex.
+- expose named, opinionated profile tools from YAML configuration;
+- restrict caller-controlled inputs to `prompt`, `model`, and `cwd`;
+- default Codex execution to `sandboxMode: danger-full-access` and `approvalPolicy: never` for devcontainer use;
+- return immediately while Codex runs in the background;
+- send MCP logging notifications when a background session completes or fails;
+- expose `continue-session` as a generic wrapper around `codex-reply`.
 
-**Problem 2**: The agents keep setting incorrect parameter values for the environment, specifically the sandbox mode. In my case the sandbox should be danger full permissions since we are already running in a devcontainer and bwrap does not operate correctly and we already have a safe environment.
+## Install and build
 
-## Opportunities
+```bash
+npm install
+npm run build
+```
 
-IF we also assume that Claude is the harness being used (it is), then we can take advantage of Claude [channels](https://code.claude.com/docs/en/channels) to make the async workflow even better.
+## Configuration
 
-We also can take advantage of Codex profiles to also provide access to non-OpenAI models.
+Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`. If no config is provided, a single `codex` profile is created with `danger-full-access` sandboxing and `never` approval policy.
 
-## Proposal
+Example:
 
-Create a MCP Server, in typescript, that hosts a MCP client that can be configured to use codex in MCP mode.
+```yaml
+codex:
+  command: codex
+  args: [mcp-server]
+  env: {}
 
-Proxy the `codex` tool into multiple tools with specific configurations.
+tools:
+  codex-write:
+    description: Run Codex asynchronously with full filesystem access.
+    sandboxMode: danger-full-access
+    approvalPolicy: never
+  codex-review:
+    description: Ask Codex to review code without making edits.
+    sandboxMode: read-only
+    approvalPolicy: never
+```
 
-Each tool would have a name, and only `prompt`, `model`, and `cwd` options.
+## Run
 
-The server would read a YAML configuration file to configure the different tool profiles.
+```bash
+node dist/src/cli.js ./fixtures/async-codex-mcp.yaml
+```
 
-Tool profiles would allow setting all of the other `codex` settings.
+Each configured profile becomes an MCP tool that accepts:
 
-`codex-reply` would be re-exposed as a more generic `continue-session` tool that would allow resuming a completed session.
+- `prompt` (required): prompt to send to Codex;
+- `model` (optional): model override, for example `gpt-5.4-mini`;
+- `cwd` (optional): working directory for the run.
 
-THe server would expose a channel allowing Claude to be notified when the session `stop` happens.
+The profile tool returns JSON with an async `session_id` and `running` status. Use `session-status` with that id to inspect completion state. When complete, use `continue-session` with the async session id and a new `prompt` to resume the underlying Codex session.
 
-### Stretch
+## Development
 
-IF it is possible to interface with codex in such a way that a combination channels and tool calls could allow the supervising agent to _steer_ the conversation, that would be awesome.
+```bash
+npm test
+npm run build
+```
+
+The test suite uses ThoughtSpot's `mcp-testing-kit` transport approach to exercise the MCP server directly and validates a `gpt-5.4-mini` model override without making network calls.

@@ -1,0 +1,23 @@
+{
+  "name": "wyrd-company",
+  "owner": {
+    "name": "Wyrd Company"
+  },
+  "description": "Wyrd Company Claude Code plugins.",
+  "version": "0.1.0",
+  "plugins": [
+    {
+      "name": "async-codex-mcp",
+      "displayName": "Async Codex MCP",
+      "description": "Expose async Codex MCP profile tools to Claude Code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Wyrd Company"
+      },
+      "repository": "https://github.com/wyrd-company/async-codex-mcp",
+      "keywords": ["codex", "mcp", "async"],
+      "category": "Developer Tools",
+      "source": "./plugins/async-codex-mcp"
+    }
+  ]
+}

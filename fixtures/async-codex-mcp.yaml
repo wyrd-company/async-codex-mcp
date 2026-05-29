@@ -1,0 +1,12 @@
+codex:
+  command: codex
+  args: [mcp-server]
+tools:
+  codex-write:
+    description: Run Codex asynchronously with full filesystem access.
+    sandboxMode: danger-full-access
+    approvalPolicy: never
+  codex-review:
+    description: Ask Codex to review code without making edits.
+    sandboxMode: read-only
+    approvalPolicy: never

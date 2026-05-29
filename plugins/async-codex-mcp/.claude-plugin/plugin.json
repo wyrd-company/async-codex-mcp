@@ -1,0 +1,12 @@
+{
+  "name": "async-codex-mcp",
+  "displayName": "Async Codex MCP",
+  "version": "0.1.0",
+  "description": "Expose async Codex MCP profile tools to Claude Code.",
+  "author": {
+    "name": "Wyrd Company"
+  },
+  "repository": "https://github.com/wyrd-company/async-codex-mcp",
+  "keywords": ["codex", "mcp", "async"],
+  "mcpServers": "./.mcp.json"
+}

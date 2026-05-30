@@ -15,11 +15,10 @@ The Codex CLI can run as an MCP server with `codex mcp-server`, exposing blockin
 - send MCP logging notifications when a background session completes or fails;
 - expose `continue-session` as a generic wrapper around `codex-reply`.
 
-## Install and build
+## Install
 
 ```bash
-npm install
-npm run build
+npm install --global @wyrd-company/async-codex-mcp
 ```
 
 ## Configuration
@@ -119,21 +118,13 @@ If a session is waiting for input, answer it with:
 
 ## Claude Code plugin
 
-This repo includes a Claude Code marketplace at `.claude-plugin/marketplace.json` with an `async-codex-mcp` plugin. The plugin registers this repo's built MCP server using `dist/src/cli.js` and `fixtures/async-codex-mcp.yaml`.
+This repo includes the `async-codex-mcp` Claude Code plugin under `plugins/async-codex-mcp`. The marketplace manifest lives in the dedicated Wyrd Company plugin marketplace repository.
 
-Before installing the plugin locally, build the server:
+## Publishing
 
-```bash
-npm ci
-npm run build
-```
+The package is published publicly to npm as `@wyrd-company/async-codex-mcp`. Publishing is handled by the `Publish Package` GitHub Actions workflow, which runs tests, builds the package, and publishes with the repository `NPM_TOKEN` secret.
 
-Then add the marketplace from this repo root in Claude Code:
-
-```bash
-claude plugin marketplace add .
-claude plugin install async-codex-mcp@wyrd-company
-```
+Run it manually from GitHub Actions, or push a SemVer tag without a `v` prefix, for example `0.1.0`.
 
 ## Development
 

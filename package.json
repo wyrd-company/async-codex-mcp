@@ -1,5 +1,5 @@
 {
-  "name": "async-codex-mcp",
+  "name": "@wyrd-company/async-codex-mcp",
   "version": "0.1.0",
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
@@ -12,8 +12,22 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "start": "node dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "fixtures",
+    "plugins/async-codex-mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wyrd-company/async-codex-mcp.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

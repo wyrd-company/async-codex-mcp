@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "async-codex-mcp": {
-      "command": "node",
+      "command": "npx",
       "args": [
-        "${CLAUDE_PROJECT_DIR}/dist/src/cli.js",
-        "${CLAUDE_PROJECT_DIR}/fixtures/async-codex-mcp.yaml"
+        "--yes",
+        "@wyrd-company/async-codex-mcp"
       ],
       "env": {}
     }

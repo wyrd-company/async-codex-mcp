@@ -11,6 +11,7 @@ const codexServerSchema = z.object({
   args: z.array(z.string()).default(["mcp-server"]),
   env: stringRecordSchema.default({}),
   cwd: z.string().optional(),
+  requestTimeoutSec: z.number().int().positive().default(86400),
 });
 
 const callbacksSchema = z.object({
@@ -36,7 +37,7 @@ const profileSchema = z.object({
 }).strict();
 
 const configSchema = z.object({
-  codex: codexServerSchema.default({ command: "codex", args: ["mcp-server"], env: {} }),
+  codex: codexServerSchema.default({ command: "codex", args: ["mcp-server"], env: {}, requestTimeoutSec: 86400 }),
   callbacks: callbacksSchema.default({ enabled: true, askTimeoutSec: 3600 }),
   tools: z.record(z.string(), profileSchema).default({
     codex: {

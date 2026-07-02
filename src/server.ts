@@ -32,11 +32,14 @@ export type CreateServerOptions = {
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.1.1" },
+    { name: "async-codex-mcp", version: "0.2.0" },
     {
-      capabilities: { logging: {} },
+      capabilities: { logging: {}, experimental: { "claude/channel": {} } },
       instructions:
-        "Starts Codex sub-agent sessions asynchronously. Profile tools return immediately with an async session id; use continue-session after completion to resume.",
+        "Starts Codex sub-agent sessions asynchronously. Profile tools return immediately with an async session id; use continue-session after completion to resume. " +
+        'When this server runs as a Claude Code channel, session events arrive as <channel source="async-codex-mcp" session_id="..." kind="...">. ' +
+        "kind=ask means Codex is blocked waiting for input: call answer-session with the session_id from the tag. " +
+        "kind=notify is a non-blocking progress update. kind=completed or kind=failed means the session finished; use session-status or continue-session.",
     },
   );
   const client = options.client ?? new CodexMcpClient(config);
@@ -207,12 +210,29 @@ function errorMessageFromResult(result: CallToolResult): string {
   return text || "Codex returned an error result.";
 }
 
+async function sendChannelNotification(server: McpServer, content: string, meta: Record<string, string | undefined>) {
+  const cleanMeta = Object.fromEntries(
+    Object.entries(meta).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+  await server.server.notification({
+    method: "notifications/claude/channel",
+    params: { content, meta: cleanMeta },
+  });
+}
+
 async function sendSessionNotification(server: McpServer, sessionId: string, status: "completed" | "failed", codexSessionId?: string, error?: string) {
   await server.server.sendLoggingMessage({
     level: status === "completed" ? "notice" : "error",
     logger: "async-codex-mcp",
     data: { session_id: sessionId, status, codex_session_id: codexSessionId, error },
   });
+  await sendChannelNotification(
+    server,
+    status === "completed"
+      ? `Async Codex session ${sessionId} completed. Use session-status to read the result or continue-session to resume.`
+      : `Async Codex session ${sessionId} failed: ${error ?? "unknown error"}`,
+    { session_id: sessionId, kind: status, codex_session_id: codexSessionId },
+  );
 }
 
 async function sendCallbackNotification(
@@ -227,6 +247,11 @@ async function sendCallbackNotification(
     logger: "async-codex-mcp",
     data: { session_id: sessionId, type, message, ...extra },
   });
+  await sendChannelNotification(
+    server,
+    extra.context ? `${message}\n\nContext: ${extra.context}` : message,
+    { session_id: sessionId, kind: type, topic: extra.topic },
+  );
 }
 
 async function prepareProfile(config: AsyncCodexConfig, profile: ToolProfile, sessionId: string, callbackHub: CallbackHub): Promise<ToolProfile> {
@@ -253,6 +278,9 @@ async function prepareProfile(config: AsyncCodexConfig, profile: ToolProfile, se
             "--session-id",
             sessionId,
           ],
+          // Codex aborts blocked ask_user calls at its default MCP tool
+          // timeout (60s); a human answer routinely takes longer.
+          tool_timeout_sec: profile.callbacks?.askTimeoutSec ?? config.callbacks.askTimeoutSec,
         },
       },
     },

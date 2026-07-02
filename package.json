@@ -1,6 +1,6 @@
 {
   "name": "@wyrd-company/async-codex-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
   "bin": {
@@ -20,6 +20,7 @@
   "files": [
     ".claude-plugin",
     ".mcp.json",
+    "bin",
     "dist/src",
     "dist/bundle",
     "fixtures"

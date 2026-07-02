@@ -39,7 +39,7 @@ class FakeCodexClient implements CodexClientLike {
 
 const config = {
   codex: { command: "codex", args: ["mcp-server"], env: {} },
-  callbacks: { enabled: true },
+  callbacks: { enabled: true, askTimeoutSec: 3600 },
   tools: {
     "codex-write": {
       description: "Run Codex with safe defaults",
@@ -81,6 +81,8 @@ describe("async-codex-mcp server", () => {
     expect(fake.calls[0].profile.sandboxMode).toBe("danger-full-access");
     expect(fake.calls[0].profile.approvalPolicy).toBe("never");
     expect(Object.keys(fake.calls[0].profile.config.mcp_servers as Record<string, unknown>)).toContain("async_codex_mcp_callback");
+    const callbackServer = (fake.calls[0].profile.config.mcp_servers as Record<string, any>).async_codex_mcp_callback;
+    expect(callbackServer.tool_timeout_sec).toBe(3600);
     expect(fake.calls[0].args).toEqual({ prompt: "build this", model: "gpt-5.4-mini", cwd: "/tmp/project" });
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123", content: "done" } });
@@ -179,6 +181,44 @@ describe("async-codex-mcp server", () => {
     expect(await ask.json()).toEqual({ answer: "Use staging." });
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
+  });
+
+  it("emits Claude Code channel events for callbacks and session completion", async () => {
+    const fake = new FakeCodexClient();
+    server = createServer(config, { client: fake });
+    const client = await connect(server.server as never);
+    const channelEvents: any[] = [];
+    client.onNotification((message: JSONRPCMessage) => {
+      if ((message as any).method === "notifications/claude/channel") channelEvents.push((message as any).params);
+    });
+
+    const started = await client.callTool("codex-write", { prompt: "channel events" });
+    const { session_id } = JSON.parse(textOf(started));
+    const callback = callbackConnection(fake.calls[0].profile);
+
+    await fetch(`${callback.url}/notify`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ session_id, message: "halfway done", topic: "progress" }),
+    });
+
+    const askPromise = fetch(`${callback.url}/ask`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ session_id, message: "Which target?", context: "Found staging and production." }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await client.callTool("answer-session", { session_id, message: "Use staging." });
+    await askPromise;
+
+    fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(channelEvents.map((event) => event.meta.kind)).toEqual(["notify", "ask", "completed"]);
+    expect(channelEvents[0]).toEqual({ content: "halfway done", meta: { session_id, kind: "notify", topic: "progress" } });
+    expect(channelEvents[1].content).toBe("Which target?\n\nContext: Found staging and production.");
+    expect(channelEvents[1].meta).toEqual({ session_id, kind: "ask" });
+    expect(channelEvents[2].meta).toEqual({ session_id, kind: "completed", codex_session_id: "codex-123" });
   });
 
   it("allows callback tool injection to be disabled per tool", async () => {

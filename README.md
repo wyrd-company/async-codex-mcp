@@ -27,6 +27,8 @@ Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`
 
 Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also settable per tool under `tools.<name>.callbacks`) is passed to Codex as the callback MCP server's `tool_timeout_sec` — the ceiling on how long a blocking `async_codex_ask_user` call can wait for an answer. Without it, Codex aborts blocked asks at its default 60-second tool timeout and the session fails.
 
+`codex.requestTimeoutSec` (default 86400) sets the MCP request timeout for this server's own `codex`/`codex-reply` calls into the Codex MCP server. The SDK default is 60 seconds, which aborts any Codex run longer than a minute with `MCP error -32001`.
+
 Example:
 
 ```yaml

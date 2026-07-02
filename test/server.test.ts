@@ -38,7 +38,7 @@ class FakeCodexClient implements CodexClientLike {
 }
 
 const config = {
-  codex: { command: "codex", args: ["mcp-server"], env: {} },
+  codex: { command: "codex", args: ["mcp-server"], env: {}, requestTimeoutSec: 86400 },
   callbacks: { enabled: true, askTimeoutSec: 3600 },
   tools: {
     "codex-write": {

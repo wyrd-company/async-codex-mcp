@@ -38,14 +38,20 @@ export class CodexMcpClient implements CodexClientLike {
     if (profile.developerInstructions) codexArgs["developer-instructions"] = profile.developerInstructions;
     if (Object.keys(profile.config).length > 0) codexArgs.config = profile.config;
 
-    return client.callTool({ name: "codex", arguments: codexArgs }) as Promise<CallToolResult>;
+    return client.callTool({ name: "codex", arguments: codexArgs }, undefined, this.requestOptions()) as Promise<CallToolResult>;
   }
 
   async continueSession(sessionId: string, prompt: string, cwd?: string): Promise<CallToolResult> {
     const client = await this.getClient();
     const args: Record<string, unknown> = { threadId: sessionId, prompt };
     if (cwd) args.cwd = cwd;
-    return client.callTool({ name: "codex-reply", arguments: args }) as Promise<CallToolResult>;
+    return client.callTool({ name: "codex-reply", arguments: args }, undefined, this.requestOptions()) as Promise<CallToolResult>;
+  }
+
+  // The SDK default request timeout is 60s, which aborts any Codex run
+  // longer than a minute regardless of callback state.
+  private requestOptions() {
+    return { timeout: this.config.codex.requestTimeoutSec * 1000, resetTimeoutOnProgress: true };
   }
 
   async close(): Promise<void> {

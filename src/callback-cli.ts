@@ -7,7 +7,7 @@ import { z } from "zod";
 const options = parseArgs(process.argv.slice(2));
 
 const server = new McpServer(
-  { name: "async-codex-mcp-callback", version: "0.2.0" },
+  { name: "async-codex-mcp-callback", version: "0.3.0" },
   {
     instructions:
       "Use async_codex_ask_user only when you need a user answer before continuing. Use async_codex_notify_user for non-blocking progress updates or FYIs.",

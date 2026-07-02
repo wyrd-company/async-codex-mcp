@@ -1,0 +1,16 @@
+{
+  "description": "Block Claude from ending its turn while async Codex sessions are still running or waiting for input.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/bundle/stop-hook-cli.js\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

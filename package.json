@@ -1,6 +1,6 @@
 {
   "name": "@wyrd-company/async-codex-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
   "bin": {
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:bundle": "esbuild src/cli.ts src/callback-cli.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build:bundle": "esbuild src/cli.ts src/callback-cli.ts src/stop-hook-cli.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
     "prepack": "npm run build && npm run build:bundle",
     "test": "vitest run",
     "start": "node dist/src/cli.js"
@@ -21,6 +21,7 @@
     ".claude-plugin",
     ".mcp.json",
     "bin",
+    "hooks",
     "dist/src",
     "dist/bundle",
     "fixtures"

@@ -7,6 +7,7 @@ import { CallbackHub } from "./callback-hub.js";
 import { CodexMcpClient, type CodexClientLike } from "./codex-client.js";
 import type { AsyncCodexConfig, ToolProfile } from "./config.js";
 import { SessionStore } from "./session-store.js";
+import { removeStateFile, writeStateFile } from "./state-file.js";
 
 const runShape = {
   prompt: z.string().min(1).describe("Prompt to send to Codex."),
@@ -32,7 +33,7 @@ export type CreateServerOptions = {
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.2.0" },
+    { name: "async-codex-mcp", version: "0.3.0" },
     {
       capabilities: { logging: {}, experimental: { "claude/channel": {} } },
       instructions:
@@ -44,6 +45,13 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   );
   const client = options.client ?? new CodexMcpClient(config);
   const store = options.store ?? new SessionStore();
+  store.onChange = (current) => {
+    try {
+      writeStateFile(current.sessions.values());
+    } catch (error) {
+      server.server.onerror?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
   const callbackHub = new CallbackHub({
     ask: async ({ sessionId, message, context }) => {
       const ask = store.ask(sessionId, { message, context });
@@ -58,7 +66,13 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
 
   let closeServicesPromise: Promise<void> | undefined;
   const closeServices = () => {
-    closeServicesPromise ??= Promise.all([client.close(), callbackHub.close()]).then(() => undefined);
+    closeServicesPromise ??= Promise.all([client.close(), callbackHub.close()]).then(() => {
+      try {
+        removeStateFile();
+      } catch {
+        // best-effort cleanup; the Stop hook also ignores files from dead pids
+      }
+    });
     return closeServicesPromise;
   };
   const originalOnClose = server.server.onclose;

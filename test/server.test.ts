@@ -183,6 +183,37 @@ describe("async-codex-mcp server", () => {
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
   });
 
+  it("persists session state for the Stop hook and cleans it up on close", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "async-codex-state-"));
+    process.env.ASYNC_CODEX_MCP_STATE_DIR = stateDir;
+    try {
+      const fake = new FakeCodexClient();
+      server = createServer(config, { client: fake });
+      const client = await connect(server.server as never);
+
+      const started = await client.callTool("codex-write", { prompt: "track me" });
+      const { session_id } = JSON.parse(textOf(started));
+
+      const stateFile = path.join(stateDir, `${process.pid}.json`);
+      let state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      expect(state.serverPid).toBe(process.pid);
+      expect(state.sessions).toEqual([expect.objectContaining({ id: session_id, status: "running" })]);
+
+      fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      expect(state.sessions[0].status).toBe("completed");
+
+      await close(server.server as never);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      server = undefined;
+      expect(fs.existsSync(stateFile)).toBe(false);
+    } finally {
+      delete process.env.ASYNC_CODEX_MCP_STATE_DIR;
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits Claude Code channel events for callbacks and session completion", async () => {
     const fake = new FakeCodexClient();
     server = createServer(config, { client: fake });

@@ -33,6 +33,10 @@ export class SessionStore {
   readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingAskResolvers = new Map<string, (response: string) => void>();
 
+  // Invoked after every mutation; the server uses this to persist a
+  // snapshot that the plugin's Stop hook reads out-of-process.
+  onChange?: (store: SessionStore) => void;
+
   create(input: Pick<SessionRecord, "toolName" | "prompt" | "model" | "cwd">): SessionRecord {
     const now = new Date().toISOString();
     const session: SessionRecord = {
@@ -44,6 +48,7 @@ export class SessionStore {
       messages: [],
     };
     this.sessions.set(session.id, session);
+    this.onChange?.(this);
     return session;
   }
 
@@ -57,6 +62,7 @@ export class SessionStore {
       throw new Error(`Unknown session: ${id}`);
     }
     Object.assign(session, patch, { updatedAt: new Date().toISOString() });
+    this.onChange?.(this);
     return session;
   }
 
@@ -72,6 +78,7 @@ export class SessionStore {
     };
     session.messages.push(message);
     session.updatedAt = now;
+    this.onChange?.(this);
     return message;
   }
 
@@ -97,6 +104,7 @@ export class SessionStore {
     const response = new Promise<string>((resolve) => {
       this.pendingAskResolvers.set(message.id, resolve);
     });
+    this.onChange?.(this);
     return { message, response };
   }
 
@@ -121,6 +129,7 @@ export class SessionStore {
     const resolve = this.pendingAskResolvers.get(message.id);
     this.pendingAskResolvers.delete(message.id);
     resolve?.(response);
+    this.onChange?.(this);
     return message;
   }
 

@@ -148,6 +148,18 @@ claude --dangerously-load-development-channels plugin:async-codex-mcp@wyrd-compa
 
 From a terminal, run the script directly in place of `claude`. Without the flag the plugin still works; events are simply not injected and `session-status` polling applies.
 
+## Stop hook: keeping Claude engaged
+
+Until channel injection is broadly available, Claude tends to start an async Codex session and end its turn — leaving the session unmonitored. The plugin ships a `Stop` hook (`hooks/hooks.json`) that blocks Claude from stopping while sessions started in the same conversation are still `running` or `waiting_for_input`, with instructions to answer pending asks via `answer-session` and to poll `session-status` until completion.
+
+How it works:
+
+- The MCP server persists a session snapshot on every state change to `$TMPDIR/async-codex-mcp-state/<server-pid>.json` (override the directory with `ASYNC_CODEX_MCP_STATE_DIR`), recording the `CLAUDE_CODE_SESSION_ID` and parent pid it was spawned with. The file is removed when the server shuts down.
+- On `Stop`, the hook matches snapshots against the hook's `session_id` (exact), falling back to process ancestry for cases where the session id rotates but the Claude process and its MCP server persist (e.g. `/clear`). Snapshots from dead server processes are ignored.
+- If any matched session is active, the hook returns `{"decision": "block"}` with a per-session summary; otherwise it stays silent and Claude stops normally.
+
+Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the plugin. Sessions cannot block forever: Codex runs are capped by `codex.requestTimeoutSec` and blocked asks by `callbacks.askTimeoutSec`, after which sessions transition to `failed` and the hook releases.
+
 ## Publishing
 
 The package is published publicly to npm as `@wyrd-company/async-codex-mcp`. Publishing is handled by the `Publish Package` GitHub Actions workflow, which runs tests, builds the package, and publishes with the repository `NPM_TOKEN` secret.

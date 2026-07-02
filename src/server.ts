@@ -32,7 +32,7 @@ export type CreateServerOptions = {
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.1.0" },
+    { name: "async-codex-mcp", version: "0.1.1" },
     {
       capabilities: { logging: {} },
       instructions:

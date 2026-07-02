@@ -15,10 +15,12 @@ const codexServerSchema = z.object({
 
 const callbacksSchema = z.object({
   enabled: z.boolean().default(true),
+  askTimeoutSec: z.number().int().positive().default(3600),
 }).strict();
 
 const profileCallbacksSchema = z.object({
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
+  askTimeoutSec: z.number().int().positive().optional(),
 }).strict();
 
 const profileSchema = z.object({
@@ -35,7 +37,7 @@ const profileSchema = z.object({
 
 const configSchema = z.object({
   codex: codexServerSchema.default({ command: "codex", args: ["mcp-server"], env: {} }),
-  callbacks: callbacksSchema.default({ enabled: true }),
+  callbacks: callbacksSchema.default({ enabled: true, askTimeoutSec: 3600 }),
   tools: z.record(z.string(), profileSchema).default({
     codex: {
       description: "Run Codex asynchronously with danger-full-access sandboxing.",

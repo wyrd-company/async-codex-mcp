@@ -25,6 +25,8 @@ npm install --global @wyrd-company/async-codex-mcp
 
 Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`. If no config is provided, a single `codex` profile is created with `danger-full-access` sandboxing and `never` approval policy.
 
+Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also settable per tool under `tools.<name>.callbacks`) is passed to Codex as the callback MCP server's `tool_timeout_sec` — the ceiling on how long a blocking `async_codex_ask_user` call can wait for an answer. Without it, Codex aborts blocked asks at its default 60-second tool timeout and the session fails.
+
 Example:
 
 ```yaml
@@ -118,7 +120,31 @@ If a session is waiting for input, answer it with:
 
 ## Claude Code plugin
 
-This repo includes the `async-codex-mcp` Claude Code plugin under `plugins/async-codex-mcp`. The marketplace manifest lives in the dedicated Wyrd Company plugin marketplace repository.
+This package is also the `async-codex-mcp` Claude Code plugin: `.claude-plugin/plugin.json` and `.mcp.json` sit at the package root, and the MCP server runs from the self-contained bundle at `dist/bundle/cli.js`. The marketplace manifest lives in the dedicated Wyrd Company plugin marketplace repository.
+
+## Claude Code channels
+
+The server declares the experimental `claude/channel` capability. When a session opts in, callback and lifecycle events are pushed directly into Claude's context as `<channel source="async-codex-mcp" session_id="..." kind="...">` events instead of requiring `session-status` polling:
+
+- `kind="notify"`: non-blocking progress update (with a `topic` attribute when set)
+- `kind="ask"`: Codex is blocked waiting for input; Claude answers with `answer-session`
+- `kind="completed"` / `kind="failed"`: the session finished
+
+Channels are a Claude Code research preview (v2.1.80+). This plugin is not on the Anthropic-curated channel allowlist, so each session must opt in with the development flag:
+
+```bash
+claude --dangerously-load-development-channels plugin:async-codex-mcp@wyrd-company
+```
+
+`bin/claude-channels-wrapper.sh` wraps that invocation. In the VSCode extension, point the `claudeCode.claudeProcessWrapper` setting at the script inside the installed plugin, for example:
+
+```json
+{
+  "claudeCode.claudeProcessWrapper": "/home/vscode/.claude/plugins/cache/wyrd-company/async-codex-mcp/unknown/bin/claude-channels-wrapper.sh"
+}
+```
+
+From a terminal, run the script directly in place of `claude`. Without the flag the plugin still works; events are simply not injected and `session-status` polling applies.
 
 ## Publishing
 

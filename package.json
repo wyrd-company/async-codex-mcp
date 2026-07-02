@@ -1,6 +1,6 @@
 {
   "name": "@wyrd-company/async-codex-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
   "bin": {
@@ -12,14 +12,17 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepack": "npm run build",
+    "build:bundle": "esbuild src/cli.ts src/callback-cli.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "prepack": "npm run build && npm run build:bundle",
     "test": "vitest run",
     "start": "node dist/src/cli.js"
   },
   "files": [
+    ".claude-plugin",
+    ".mcp.json",
     "dist/src",
-    "fixtures",
-    "plugins/async-codex-mcp"
+    "dist/bundle",
+    "fixtures"
   ],
   "repository": {
     "type": "git",
@@ -38,6 +41,7 @@
     "@openai/codex": "^0.135.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.15.3",
+    "esbuild": "^0.25.0",
     "mcp-testing-kit": "github:thoughtspot/mcp-testing-kit",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2"

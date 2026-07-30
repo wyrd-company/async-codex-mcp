@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import type { StateFile, StateFileSession } from "./state-file.js";
+import type { WatcherFile } from "./watcher-file.js";
 
 export type StopHookDecision = {
   decision: "block";
@@ -61,32 +62,52 @@ export type StopHookContext = {
   ancestors: () => Set<number>;
 };
 
+function matchesContext(claudeSessionId: string | undefined, claudePid: number, context: StopHookContext, ancestors: Set<number>): boolean {
+  if (context.sessionId && claudeSessionId === context.sessionId) return true;
+  return ancestors.has(claudePid);
+}
+
+function hasLiveWatcher(
+  watcherFiles: WatcherFile[],
+  context: StopHookContext,
+  ancestors: Set<number>,
+  pidAlive: (pid: number) => boolean,
+): boolean {
+  return watcherFiles.some((watcher) => {
+    if (!pidAlive(watcher.watcherPid)) return false;
+    if (context.sessionId && watcher.claudeSessionId === context.sessionId) return true;
+    return watcher.ancestorPids.some((pid) => ancestors.has(pid));
+  });
+}
+
 export function evaluateStopHook(
   files: StateFile[],
+  watcherFiles: WatcherFile[],
   context: StopHookContext,
+  watcherCommand: string,
   pidAlive: (pid: number) => boolean = isPidAlive,
 ): StopHookDecision | undefined {
   let ancestors: Set<number> | undefined;
-  const matchesSession = (file: StateFile) => {
-    if (context.sessionId && file.claudeSessionId === context.sessionId) return true;
-    ancestors ??= context.ancestors();
-    return ancestors.has(file.claudePid);
-  };
+  const resolveAncestors = () => (ancestors ??= context.ancestors());
 
   const active = files
-    .filter((file) => matchesSession(file) && pidAlive(file.serverPid))
+    .filter((file) => matchesContext(file.claudeSessionId, file.claudePid, context, resolveAncestors()) && pidAlive(file.serverPid))
     .flatMap((file) => file.sessions.filter((session) => ACTIVE_STATUSES.has(session.status)));
 
   if (active.length === 0) return undefined;
 
   const waiting = active.filter((session) => session.status === "waiting_for_input");
+  if (waiting.length === 0 && hasLiveWatcher(watcherFiles, context, resolveAncestors(), pidAlive)) {
+    return undefined;
+  }
+
   const reason = [
     `Async Codex session${active.length === 1 ? "" : "s"} started from this conversation ${active.length === 1 ? "is" : "are"} still active:`,
     ...active.map(describe),
     "",
     waiting.length > 0
       ? "Answer the waiting session(s) now with the answer-session tool, then keep monitoring."
-      : "Keep monitoring: wait (for example `sleep 30` via Bash), then check session-status, and repeat until each session completes or fails.",
+      : `No watcher is monitoring these sessions yet. Start one now, running in the background: \`${watcherCommand}\`. It polls until every session settles and prints status changes as they happen; you'll be notified when it exits or via its output. Once it's running, stopping is allowed again.`,
     "When a session completes, read its result with session-status and report it. Only stop early if the user explicitly told you to abandon these sessions.",
   ].join("\n");
 

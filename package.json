@@ -4,7 +4,8 @@
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
   "bin": {
-    "async-codex-mcp": "dist/src/cli.js"
+    "async-codex-mcp": "dist/src/cli.js",
+    "async-codex-mcp-watch": "dist/src/codex-watch-cli.js"
   },
   "main": "dist/src/index.js",
   "exports": {
@@ -12,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:bundle": "esbuild src/cli.ts src/callback-cli.ts src/stop-hook-cli.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build:bundle": "esbuild src/cli.ts src/callback-cli.ts src/stop-hook-cli.ts src/codex-watch-cli.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
     "prepack": "npm run build && npm run build:bundle",
     "test": "vitest run",
     "start": "node dist/src/cli.js"
@@ -47,5 +48,9 @@
     "mcp-testing-kit": "github:thoughtspot/mcp-testing-kit",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.27.7": true
   }
 }

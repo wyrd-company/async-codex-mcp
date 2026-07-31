@@ -166,9 +166,9 @@ Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the
 `codex-watch-cli.js` (bin: `async-codex-mcp-watch`) is a small CLI meant to be launched as a background shell task (e.g. Claude's `Bash` tool with `run_in_background: true`) instead of having Claude poll `session-status` in a sleep loop. On start it:
 
 - Finds sessions matching the current `CLAUDE_CODE_SESSION_ID`/process ancestry and exits immediately if none are active.
-- Registers itself in `$TMPDIR/async-codex-mcp-state/watchers/<watcher-pid>.json` so the Stop hook can detect it and allow Claude to stop.
-- Polls every `ASYNC_CODEX_MCP_WATCH_INTERVAL_MS` (default `10000`) and prints a line on every status change (`waiting_for_input`, `completed`, `failed`, ...).
-- Exits once every matched session has settled, removing its registration file.
+- If a matched session is already `waiting_for_input` (Codex called `async_codex_ask_user`), it reports that immediately and exits without registering — only Claude can answer it, so there's nothing to watch in the background yet.
+- Otherwise it registers itself in `$TMPDIR/async-codex-mcp-state/watchers/<watcher-pid>.json` so the Stop hook can detect it and allow Claude to stop, then polls every `ASYNC_CODEX_MCP_WATCH_INTERVAL_MS` (default `10000`), printing a line on every status change.
+- Exits — removing its registration file — as soon as either every matched session has settled (`completed`/`failed`), or any session starts `waiting_for_input`. The latter needs Claude back regardless of what else is still running, so the watcher hands control back immediately rather than waiting for everything to finish.
 
 Because it's a normal background process, the harness notifies Claude when it exits (or Claude can attach `Monitor` to stream its status-change lines as they happen) — no polling loop required in the conversation itself.
 

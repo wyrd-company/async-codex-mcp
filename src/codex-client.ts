@@ -64,7 +64,7 @@ export class CodexMcpClient implements CodexClientLike {
   private async getClient(): Promise<Client> {
     if (this.client) return this.client;
 
-    this.client = new Client({ name: "async-codex-mcp-client", version: "0.4.0" });
+    this.client = new Client({ name: "async-codex-mcp-client", version: "0.4.1" });
     this.transport = new StdioClientTransport({
       command: this.config.codex.command,
       args: this.config.codex.args,

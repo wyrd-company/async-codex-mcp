@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { processStartToken } from "./process-liveness.js";
 import { stateDir } from "./state-file.js";
 
 export type WatcherFile = {
   watcherPid: number;
+  watcherStartToken?: string;
   claudeSessionId?: string;
   ancestorPids: number[];
   startedAt: string;
@@ -27,6 +29,7 @@ export function writeWatcherFile(
 ): void {
   const snapshot: WatcherFile = {
     watcherPid: process.pid,
+    watcherStartToken: processStartToken(process.pid),
     claudeSessionId: process.env.CLAUDE_CODE_SESSION_ID,
     ancestorPids: [...ancestors],
     startedAt: new Date().toISOString(),
@@ -86,6 +89,10 @@ function parseWatcherFile(value: unknown): WatcherFile | undefined {
   }
   return {
     watcherPid: watcher.watcherPid,
+    watcherStartToken:
+      typeof watcher.watcherStartToken === "string"
+        ? watcher.watcherStartToken
+        : undefined,
     claudeSessionId:
       typeof watcher.claudeSessionId === "string"
         ? watcher.claudeSessionId

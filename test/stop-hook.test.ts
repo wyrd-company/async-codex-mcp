@@ -199,6 +199,34 @@ describe("evaluateStopHook", () => {
     );
     expect(decision).toBeUndefined();
   });
+
+  it("rejects stale server and watcher identities even when their PIDs exist", () => {
+    const identityAware = (_pid: number, token?: string) =>
+      token !== "stale-token";
+    expect(
+      evaluateStopHook(
+        [stateFile({ serverStartToken: "stale-token" })],
+        [],
+        { sessionId: "session-a", ancestors: noAncestors },
+        watchCommand,
+        identityAware,
+      ),
+    ).toBeUndefined();
+
+    const decision = evaluateStopHook(
+      [stateFile({ serverStartToken: "live-token" })],
+      [
+        watcherFile({
+          watcherStartToken: "stale-token",
+          coverage: { scope: "conversation" },
+        }),
+      ],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      identityAware,
+    );
+    expect(decision?.decision).toBe("block");
+  });
 });
 
 describe("buildWatcherCommand", () => {

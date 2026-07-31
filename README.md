@@ -168,7 +168,7 @@ How it works:
 - If a matched session is `waiting_for_input`, the hook always blocks — only Claude can answer it via `answer-session`.
 - If matched sessions are only `running`, the hook computes which sessions are covered by live watchers. It blocks with the exact installed-plugin command while any session is uncovered.
 
-Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the plugin. Sessions cannot block forever: Codex runs are capped by `codex.requestTimeoutSec` and blocked asks by `callbacks.askTimeoutSec`, after which sessions transition to `failed` and the hook releases.
+Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the plugin. Codex runs are capped by `codex.requestTimeoutSec`. Callback tool calls receive `callbacks.askTimeoutSec` as their Codex-side timeout; if Codex does not terminate the run after that timeout, the overall request timeout remains the final bound.
 
 ## Watching sessions in the background
 

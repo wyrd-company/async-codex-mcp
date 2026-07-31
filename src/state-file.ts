@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { processStartToken } from "./process-liveness.js";
 import type { SessionRecord } from "./session-store.js";
 
 export type StateFileSession = {
@@ -22,6 +23,7 @@ export type StateFileNotification = {
 
 export type StateFile = {
   serverPid: number;
+  serverStartToken?: string;
   claudePid: number;
   claudeSessionId?: string;
   updatedAt: string;
@@ -42,6 +44,7 @@ function stateFilePath(serverPid: number): string {
 export function writeStateFile(sessions: Iterable<SessionRecord>): void {
   const snapshot: StateFile = {
     serverPid: process.pid,
+    serverStartToken: processStartToken(process.pid),
     claudePid: process.ppid,
     claudeSessionId: process.env.CLAUDE_CODE_SESSION_ID,
     updatedAt: new Date().toISOString(),
@@ -116,15 +119,19 @@ function parseStateFile(value: unknown): StateFile | undefined {
     (session): session is StateFileSession =>
       Boolean(
         session &&
-          typeof session.id === "string" &&
-          typeof session.toolName === "string" &&
-          typeof session.status === "string" &&
-          typeof session.createdAt === "string" &&
-          typeof session.updatedAt === "string",
+        typeof session.id === "string" &&
+        typeof session.toolName === "string" &&
+        typeof session.status === "string" &&
+        typeof session.createdAt === "string" &&
+        typeof session.updatedAt === "string",
       ),
   );
   return {
     serverPid: file.serverPid,
+    serverStartToken:
+      typeof file.serverStartToken === "string"
+        ? file.serverStartToken
+        : undefined,
     claudePid: file.claudePid,
     claudeSessionId:
       typeof file.claudeSessionId === "string"

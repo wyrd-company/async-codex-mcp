@@ -1,4 +1,4 @@
-import { isPidAlive } from "./stop-hook.js";
+import { isProcessAlive } from "./process-liveness.js";
 import {
   readStateFiles,
   type StateFile,
@@ -17,10 +17,10 @@ export type WatchScope =
 export function matchingSessions(
   scope: WatchScope,
   files: StateFile[] = readStateFiles(),
-  pidAlive: (pid: number) => boolean = isPidAlive,
+  pidAlive: (pid: number, startToken?: string) => boolean = isProcessAlive,
 ): StateFileSession[] {
   return files
-    .filter((file) => pidAlive(file.serverPid))
+    .filter((file) => pidAlive(file.serverPid, file.serverStartToken))
     .filter((file) =>
       scope.kind === "session"
         ? file.sessions.some((session) => session.id === scope.sessionId)

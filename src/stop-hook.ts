@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { isProcessAlive } from "./process-liveness.js";
 import type { StateFile, StateFileSession } from "./state-file.js";
 import type { WatcherFile } from "./watcher-file.js";
 
@@ -11,12 +12,7 @@ export type StopHookDecision = {
 const ACTIVE_STATUSES = new Set(["running", "waiting_for_input"]);
 
 export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  return isProcessAlive(pid);
 }
 
 function parentPid(pid: number): number | undefined {
@@ -100,10 +96,10 @@ function isCoveredByLiveWatcher(
   watcherFiles: WatcherFile[],
   context: StopHookContext,
   ancestors: Set<number>,
-  pidAlive: (pid: number) => boolean,
+  pidAlive: (pid: number, startToken?: string) => boolean,
 ): boolean {
   return watcherFiles.some((watcher) => {
-    if (!pidAlive(watcher.watcherPid)) return false;
+    if (!pidAlive(watcher.watcherPid, watcher.watcherStartToken)) return false;
     if (!watcherMatchesContext(watcher, context, ancestors)) return false;
     return (
       watcher.coverage.scope === "conversation" ||
@@ -117,7 +113,7 @@ export function evaluateStopHook(
   watcherFiles: WatcherFile[],
   context: StopHookContext,
   watcherCommand: string,
-  pidAlive: (pid: number) => boolean = isPidAlive,
+  pidAlive: (pid: number, startToken?: string) => boolean = isProcessAlive,
 ): StopHookDecision | undefined {
   let ancestors: Set<number> | undefined;
   const resolveAncestors = () => (ancestors ??= context.ancestors());
@@ -130,7 +126,7 @@ export function evaluateStopHook(
           file.claudePid,
           context,
           resolveAncestors(),
-        ) && pidAlive(file.serverPid),
+        ) && pidAlive(file.serverPid, file.serverStartToken),
     )
     .flatMap((file) =>
       file.sessions.filter((session) => ACTIVE_STATUSES.has(session.status)),

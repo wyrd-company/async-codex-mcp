@@ -2,8 +2,10 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isProcessAlive, processStartToken } from "./process-liveness.js";
 
-export type SessionStatus = "running" | "waiting_for_input" | "completed" | "failed" | "interrupted";
+export type SessionStatus =
+  "running" | "waiting_for_input" | "completed" | "failed" | "interrupted";
 
 export type SessionMessage = {
   id: string;
@@ -46,11 +48,19 @@ export type SessionStoreOptions = {
 };
 
 const LIVE_STATUSES = new Set<SessionStatus>(["running", "waiting_for_input"]);
-const TERMINAL_STATUSES = new Set<SessionStatus>(["completed", "failed", "interrupted"]);
+const TERMINAL_STATUSES = new Set<SessionStatus>([
+  "completed",
+  "failed",
+  "interrupted",
+]);
 
 export function sessionStoreDir(): string {
-  const stateHome = process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state");
-  return process.env.ASYNC_CODEX_MCP_SESSION_DIR ?? path.join(stateHome, "async-codex-mcp", "sessions");
+  const stateHome =
+    process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state");
+  return (
+    process.env.ASYNC_CODEX_MCP_SESSION_DIR ??
+    path.join(stateHome, "async-codex-mcp", "sessions")
+  );
 }
 
 export class SessionStore {
@@ -72,7 +82,9 @@ export class SessionStore {
     if (this.persistent) this.load();
   }
 
-  create(input: Pick<SessionRecord, "toolName" | "prompt" | "model" | "cwd">): SessionRecord {
+  create(
+    input: Pick<SessionRecord, "toolName" | "prompt" | "model" | "cwd">,
+  ): SessionRecord {
     const now = new Date().toISOString();
     const session: SessionRecord = {
       ...input,
@@ -104,31 +116,51 @@ export class SessionStore {
   interruptOwned(): void {
     for (const session of this.ownedSessions()) {
       if (!LIVE_STATUSES.has(session.status)) continue;
-      this.rejectPendingAsk(session, `Session ${session.id} was interrupted because the MCP server stopped.`);
+      this.rejectPendingAsk(
+        session,
+        `Session ${session.id} was interrupted because the MCP server stopped.`,
+      );
       session.status = "interrupted";
-      session.error = "The MCP server stopped before this session reached a terminal state.";
+      session.error =
+        "The MCP server stopped before this session reached a terminal state.";
       session.updatedAt = new Date().toISOString();
       this.changed(session);
     }
   }
 
-  update(id: string, patch: Partial<Omit<SessionRecord, "id" | "createdAt">>): SessionRecord {
+  update(
+    id: string,
+    patch: Partial<Omit<SessionRecord, "id" | "createdAt">>,
+  ): SessionRecord {
     const session = this.sessions.get(id);
     if (!session) {
       throw new Error(`Unknown session: ${id}`);
     }
-    if (TERMINAL_STATUSES.has(session.status) && patch.status && patch.status !== session.status) {
-      throw new Error(`Session ${id} is ${session.status}; terminal sessions cannot transition to ${patch.status}.`);
+    if (
+      TERMINAL_STATUSES.has(session.status) &&
+      patch.status &&
+      patch.status !== session.status
+    ) {
+      throw new Error(
+        `Session ${id} is ${session.status}; terminal sessions cannot transition to ${patch.status}.`,
+      );
     }
     Object.assign(session, patch, { updatedAt: new Date().toISOString() });
     this.changed(session);
     return session;
   }
 
-  complete(id: string, result: CallToolResult, codexSessionId?: string): SessionRecord {
+  complete(
+    id: string,
+    result: CallToolResult,
+    codexSessionId?: string,
+  ): SessionRecord {
     const session = this.require(id);
     if (TERMINAL_STATUSES.has(session.status)) return session;
-    this.rejectPendingAsk(session, `Session ${id} completed before the pending question was answered.`);
+    this.rejectPendingAsk(
+      session,
+      `Session ${id} completed before the pending question was answered.`,
+    );
     session.status = "completed";
     session.result = result;
     session.codexSessionId = codexSessionId;
@@ -140,7 +172,10 @@ export class SessionStore {
   fail(id: string, error: string, result?: CallToolResult): SessionRecord {
     const session = this.require(id);
     if (TERMINAL_STATUSES.has(session.status)) return session;
-    this.rejectPendingAsk(session, `Session ${id} failed before the pending question was answered: ${error}`);
+    this.rejectPendingAsk(
+      session,
+      `Session ${id} failed before the pending question was answered: ${error}`,
+    );
     session.status = "failed";
     session.error = error;
     session.result = result;
@@ -149,7 +184,10 @@ export class SessionStore {
     return session;
   }
 
-  notify(sessionId: string, input: { message: string; topic?: string }): SessionMessage {
+  notify(
+    sessionId: string,
+    input: { message: string; topic?: string },
+  ): SessionMessage {
     const session = this.require(sessionId);
     const now = new Date().toISOString();
     const message: SessionMessage = {
@@ -165,10 +203,15 @@ export class SessionStore {
     return message;
   }
 
-  ask(sessionId: string, input: { message: string; context?: string }): { message: SessionMessage; response: Promise<string> } {
+  ask(
+    sessionId: string,
+    input: { message: string; context?: string },
+  ): { message: SessionMessage; response: Promise<string> } {
     const session = this.require(sessionId);
     if (TERMINAL_STATUSES.has(session.status)) {
-      throw new Error(`Session ${sessionId} is ${session.status}; it cannot ask another question.`);
+      throw new Error(
+        `Session ${sessionId} is ${session.status}; it cannot ask another question.`,
+      );
     }
     if (session.pendingAskId) {
       throw new Error(`Session ${sessionId} is already waiting for input.`);
@@ -197,17 +240,23 @@ export class SessionStore {
   answer(sessionId: string, response: string): SessionMessage {
     const session = this.require(sessionId);
     if (session.status !== "waiting_for_input" || !session.pendingAskId) {
-      throw new Error(`Session ${sessionId} is ${session.status}; only a live waiting_for_input session can be answered.`);
+      throw new Error(
+        `Session ${sessionId} is ${session.status}; only a live waiting_for_input session can be answered.`,
+      );
     }
 
-    const message = session.messages.find((item) => item.id === session.pendingAskId);
+    const message = session.messages.find(
+      (item) => item.id === session.pendingAskId,
+    );
     if (!message) {
       throw new Error(`Session ${sessionId} pending question was not found.`);
     }
 
     const resolver = this.pendingAskResolvers.get(message.id);
     if (!resolver) {
-      throw new Error(`Session ${sessionId} no longer has a live pending question.`);
+      throw new Error(
+        `Session ${sessionId} no longer has a live pending question.`,
+      );
     }
 
     const now = new Date().toISOString();
@@ -235,13 +284,16 @@ export class SessionStore {
     for (const entry of entries.sort()) {
       if (!entry.endsWith(".json")) continue;
       try {
-        const value = JSON.parse(fs.readFileSync(path.join(this.directory, entry), "utf8")) as unknown;
+        const value = JSON.parse(
+          fs.readFileSync(path.join(this.directory, entry), "utf8"),
+        ) as unknown;
         const session = parseSessionRecord(value);
         if (!session) continue;
         if (LIVE_STATUSES.has(session.status) && !this.ownerAlive(session)) {
           session.status = "interrupted";
           session.pendingAskId = undefined;
-          session.error = "The MCP server stopped before this session reached a terminal state.";
+          session.error =
+            "The MCP server stopped before this session reached a terminal state.";
           session.updatedAt = new Date().toISOString();
           this.persist(session);
         }
@@ -261,7 +313,10 @@ export class SessionStore {
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const file = path.join(this.directory, `${session.id}.json`);
     const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(session), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(temporary, JSON.stringify(session), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     fs.renameSync(temporary, file);
   }
 
@@ -301,27 +356,16 @@ function parseSessionRecord(value: unknown): SessionRecord | undefined {
 }
 
 function isSessionStatus(value: string): value is SessionStatus {
-  return value === "running" || value === "waiting_for_input" || value === "completed" || value === "failed" || value === "interrupted";
+  return (
+    value === "running" ||
+    value === "waiting_for_input" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted"
+  );
 }
 
 function isSessionOwnerAlive(session: SessionRecord): boolean {
   if (!session.ownerPid) return false;
-  try {
-    process.kill(session.ownerPid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
-  }
-  if (!session.ownerStartToken) return true;
-  const currentToken = processStartToken(session.ownerPid);
-  return currentToken === undefined || currentToken === session.ownerStartToken;
-}
-
-function processStartToken(pid: number): string | undefined {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    return fields[19];
-  } catch {
-    return undefined;
-  }
+  return isProcessAlive(session.ownerPid, session.ownerStartToken);
 }

@@ -20,7 +20,7 @@ describe("SessionStore persistence", () => {
     const session = original.create({ toolName: "codex", prompt: "perform a task", cwd: "/tmp/workspace" });
     original.complete(session.id, { content: [{ type: "text", text: "done" }] }, "codex-thread");
 
-    const recovered = new SessionStore({ directory }).get(session.id);
+    const recovered = new SessionStore({ directory, ownerAlive: () => false }).get(session.id);
 
     expect(recovered).toEqual(
       expect.objectContaining({
@@ -32,6 +32,31 @@ describe("SessionStore persistence", () => {
     );
   });
 
+  it("does not interrupt a session still owned by another live MCP server", () => {
+    const original = new SessionStore({ directory });
+    const session = original.create({ toolName: "codex", prompt: "perform a task" });
+
+    const observed = new SessionStore({ directory, ownerAlive: () => true }).get(session.id);
+
+    expect(observed?.status).toBe("running");
+  });
+
+  it("marks only this server's live sessions interrupted on clean shutdown", async () => {
+    const store = new SessionStore({ directory });
+    const session = store.create({ toolName: "codex", prompt: "perform a task" });
+    const ask = store.ask(session.id, { message: "Which option?" });
+
+    store.interruptOwned();
+
+    await expect(ask.response).rejects.toThrow(/server stopped/);
+    expect(store.get(session.id)).toEqual(
+      expect.objectContaining({
+        status: "interrupted",
+        pendingAskId: undefined,
+      }),
+    );
+  });
+
   it.each(["running", "waiting_for_input"] as const)("recovers %s sessions as interrupted", (status) => {
     const original = new SessionStore({ directory });
     const session = original.create({ toolName: "codex", prompt: "perform a task" });
@@ -39,7 +64,7 @@ describe("SessionStore persistence", () => {
       void original.ask(session.id, { message: "Which option?" }).response.catch(() => undefined);
     }
 
-    const recovered = new SessionStore({ directory }).get(session.id);
+    const recovered = new SessionStore({ directory, ownerAlive: () => false }).get(session.id);
 
     expect(recovered?.status).toBe("interrupted");
     expect(recovered?.pendingAskId).toBeUndefined();
@@ -56,6 +81,15 @@ describe("SessionStore persistence", () => {
 
     expect(recovered.get(session.id)?.status).toBe("completed");
     expect(recovered.sessions).toHaveLength(1);
+  });
+
+  it("writes atomic user-only record files", () => {
+    const store = new SessionStore({ directory });
+    const session = store.create({ toolName: "codex", prompt: "perform a task" });
+    const entries = fs.readdirSync(directory);
+
+    expect(entries).toEqual([`${session.id}.json`]);
+    expect(fs.statSync(path.join(directory, entries[0])).mode & 0o777).toBe(0o600);
   });
 
   it("keeps terminal status when a stale finalizer arrives", () => {

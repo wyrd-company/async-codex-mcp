@@ -30,6 +30,8 @@ export type SessionRecord = {
   error?: string;
   messages: SessionMessage[];
   pendingAskId?: string;
+  ownerPid?: number;
+  ownerStartToken?: string;
 };
 
 type PendingAskResolver = {
@@ -40,6 +42,7 @@ type PendingAskResolver = {
 export type SessionStoreOptions = {
   directory?: string;
   persistent?: boolean;
+  ownerAlive?: (session: SessionRecord) => boolean;
 };
 
 const LIVE_STATUSES = new Set<SessionStatus>(["running", "waiting_for_input"]);
@@ -56,6 +59,7 @@ export class SessionStore {
   private readonly ownedSessionIds = new Set<string>();
   private readonly directory: string;
   private readonly persistent: boolean;
+  private readonly ownerAlive: (session: SessionRecord) => boolean;
 
   // Invoked after every mutation; the server uses this to persist a
   // snapshot that the plugin's Stop hook reads out-of-process.
@@ -64,6 +68,7 @@ export class SessionStore {
   constructor(options: SessionStoreOptions = {}) {
     this.directory = options.directory ?? sessionStoreDir();
     this.persistent = options.persistent ?? true;
+    this.ownerAlive = options.ownerAlive ?? isSessionOwnerAlive;
     if (this.persistent) this.load();
   }
 
@@ -76,6 +81,8 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       messages: [],
+      ownerPid: process.pid,
+      ownerStartToken: processStartToken(process.pid),
     };
     this.sessions.set(session.id, session);
     this.ownedSessionIds.add(session.id);
@@ -92,6 +99,17 @@ export class SessionStore {
       const session = this.sessions.get(id);
       return session ? [session] : [];
     });
+  }
+
+  interruptOwned(): void {
+    for (const session of this.ownedSessions()) {
+      if (!LIVE_STATUSES.has(session.status)) continue;
+      this.rejectPendingAsk(session, `Session ${session.id} was interrupted because the MCP server stopped.`);
+      session.status = "interrupted";
+      session.error = "The MCP server stopped before this session reached a terminal state.";
+      session.updatedAt = new Date().toISOString();
+      this.changed(session);
+    }
   }
 
   update(id: string, patch: Partial<Omit<SessionRecord, "id" | "createdAt">>): SessionRecord {
@@ -220,7 +238,7 @@ export class SessionStore {
         const value = JSON.parse(fs.readFileSync(path.join(this.directory, entry), "utf8")) as unknown;
         const session = parseSessionRecord(value);
         if (!session) continue;
-        if (LIVE_STATUSES.has(session.status)) {
+        if (LIVE_STATUSES.has(session.status) && !this.ownerAlive(session)) {
           session.status = "interrupted";
           session.pendingAskId = undefined;
           session.error = "The MCP server stopped before this session reached a terminal state.";
@@ -284,4 +302,26 @@ function parseSessionRecord(value: unknown): SessionRecord | undefined {
 
 function isSessionStatus(value: string): value is SessionStatus {
   return value === "running" || value === "waiting_for_input" || value === "completed" || value === "failed" || value === "interrupted";
+}
+
+function isSessionOwnerAlive(session: SessionRecord): boolean {
+  if (!session.ownerPid) return false;
+  try {
+    process.kill(session.ownerPid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+  }
+  if (!session.ownerStartToken) return true;
+  const currentToken = processStartToken(session.ownerPid);
+  return currentToken === undefined || currentToken === session.ownerStartToken;
+}
+
+function processStartToken(pid: number): string | undefined {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return fields[19];
+  } catch {
+    return undefined;
+  }
 }

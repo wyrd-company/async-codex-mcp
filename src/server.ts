@@ -33,7 +33,7 @@ export type CreateServerOptions = {
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.4.1" },
+    { name: "async-codex-mcp", version: "0.5.0" },
     {
       capabilities: { logging: {}, experimental: { "claude/channel": {} } },
       instructions:
@@ -42,8 +42,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
         "kind=ask means Codex is blocked waiting for input: call answer-session with the session_id from the tag. " +
         "kind=notify is a non-blocking progress update. kind=completed or kind=failed means the session finished; use session-status or continue-session. " +
         "Without channel support, do not poll session-status in a sleep loop. A Stop hook blocks you from ending your turn while sessions you started are still active, unless a watcher is already monitoring them. " +
-        "When blocked, the hook's reason gives the exact command to start one: run it via Bash with run_in_background true (this bin is also on PATH as async-codex-mcp-watch). " +
-        "It polls in the background, prints a line on every status change, and exits once all sessions settle or any session starts waiting for input — you'll get a task notification when it exits, or you can attach Monitor to stream its output. " +
+        "When blocked, the hook's reason gives an absolute command that works from the installed plugin: run it via Bash with run_in_background true. Global npm installs also expose async-codex-mcp-watch on PATH. " +
+        "The default watcher covers the conversation; add --session-id <async-session-id> to cover only one session. It prints status changes and notify messages, and exits once its covered sessions settle or need input. " +
         "Once it's running, stopping is allowed again; when it exits, check session-status: if a session is waiting_for_input, answer it with answer-session, then restart the watcher if others are still running.",
     },
   );
@@ -70,6 +70,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
 
   let closeServicesPromise: Promise<void> | undefined;
   const closeServices = () => {
+    store.interruptOwned();
     closeServicesPromise ??= Promise.all([client.close(), callbackHub.close()]).then(() => {
       try {
         removeStateFile();

@@ -51,7 +51,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   const store = options.store ?? new SessionStore();
   store.onChange = (current) => {
     try {
-      writeStateFile(current.sessions.values());
+      writeStateFile(current.ownedSessions());
     } catch (error) {
       server.server.onerror?.(error instanceof Error ? error : new Error(String(error)));
     }
@@ -111,18 +111,18 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
           .then(async (result) => {
             if (result.isError) {
               const message = errorMessageFromResult(result);
-              store.update(session.id, { status: "failed", result, error: message });
+              store.fail(session.id, message, result);
               await sendSessionNotification(server, session.id, "failed", undefined, message);
               return;
             }
 
             const codexSessionId = extractCodexSessionId(result);
-            store.update(session.id, { status: "completed", result, codexSessionId });
+            store.complete(session.id, result, codexSessionId);
             await sendSessionNotification(server, session.id, "completed", codexSessionId);
           })
           .catch(async (error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
-            store.update(session.id, { status: "failed", error: message });
+            store.fail(session.id, message);
             await sendSessionNotification(server, session.id, "failed", undefined, message);
           });
 

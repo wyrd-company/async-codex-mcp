@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { close, connect } from "./mcp-testing-kit-shim.js";
 import type { JSONRPCMessage, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -52,9 +52,17 @@ const config = {
 
 describe("async-codex-mcp server", () => {
   let server: ReturnType<typeof createServer> | undefined;
+  let sessionDir: string;
+
+  beforeEach(() => {
+    sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "async-codex-sessions-"));
+    process.env.ASYNC_CODEX_MCP_SESSION_DIR = sessionDir;
+  });
 
   afterEach(async () => {
     if (server) await close(server.server as never);
+    delete process.env.ASYNC_CODEX_MCP_SESSION_DIR;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
   });
 
   it("exposes configured profile tools plus session helpers", async () => {
@@ -97,6 +105,28 @@ describe("async-codex-mcp server", () => {
     const continued = await client.callTool("continue-session", { session_id: startedPayload.session_id, prompt: "next" });
     expect(textOf(continued)).toBe("continued codex-123: next");
     expect(fake.continueCalls).toEqual([{ sessionId: "codex-123", prompt: "next", cwd: "/tmp/project" }]);
+  });
+
+  it("rehydrates and resumes a completed session after the MCP server restarts", async () => {
+    const originalCodex = new FakeCodexClient();
+    server = createServer(config, { client: originalCodex });
+    let client = await connect(server.server as never);
+    const started = await client.callTool("codex-write", { prompt: "build this", cwd: "/tmp/project" });
+    const { session_id } = JSON.parse(textOf(started));
+    originalCodex.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-persisted" } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await close(server.server as never);
+    server = undefined;
+
+    const resumedCodex = new FakeCodexClient();
+    server = createServer(config, { client: resumedCodex });
+    client = await connect(server.server as never);
+
+    const status = await client.callTool("session-status", { session_id });
+    expect(JSON.parse(textOf(status))).toEqual(expect.objectContaining({ id: session_id, status: "completed", codexSessionId: "codex-persisted" }));
+    const continued = await client.callTool("continue-session", { session_id, prompt: "continue" });
+    expect(textOf(continued)).toBe("continued codex-persisted: continue");
+    expect(resumedCodex.continueCalls).toEqual([{ sessionId: "codex-persisted", prompt: "continue", cwd: "/tmp/project" }]);
   });
 
   it("reports failed background sessions", async () => {
@@ -181,6 +211,31 @@ describe("async-codex-mcp server", () => {
     expect(await ask.json()).toEqual({ answer: "Use staging." });
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
+  });
+
+  it("keeps a finalized session terminal when its stale ask is answered", async () => {
+    const fake = new FakeCodexClient();
+    server = createServer(config, { client: fake });
+    const client = await connect(server.server as never);
+    const started = await client.callTool("codex-write", { prompt: "may ask" });
+    const { session_id } = JSON.parse(textOf(started));
+    const callback = callbackConnection(fake.calls[0].profile);
+    const askPromise = fetch(`${callback.url}/ask`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ session_id, message: "Which target?" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-final" } });
+    const askResponse = await askPromise;
+    expect(askResponse.status).toBe(500);
+
+    const answered = await client.callTool("answer-session", { session_id, message: "too late" });
+    expect(answered.isError).toBe(true);
+    expect(textOf(answered)).toMatch(/completed/);
+    const status = await client.callTool("session-status", { session_id });
+    expect(JSON.parse(textOf(status))).toEqual(expect.objectContaining({ status: "completed", codexSessionId: "codex-final" }));
   });
 
   it("persists session state for the Stop hook and cleans it up on close", async () => {

@@ -1,27 +1,12 @@
 #!/usr/bin/env node
-import { readStateFiles, type StateFileSession } from "./state-file.js";
+import { ACTIVE_STATUSES, describeStatus, matchingSessions, needsAttention, stillRunning } from "./codex-watch.js";
 import { ancestorPids } from "./stop-hook.js";
 import { removeWatcherFile, writeWatcherFile } from "./watcher-file.js";
 
-const ACTIVE_STATUSES = new Set(["running", "waiting_for_input"]);
 const pollIntervalMs = Number(process.env.ASYNC_CODEX_MCP_WATCH_INTERVAL_MS ?? 10_000);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function matchingSessions(sessionId: string | undefined, ancestors: Set<number>): StateFileSession[] {
-  return readStateFiles()
-    .filter((file) => (sessionId && file.claudeSessionId === sessionId) || ancestors.has(file.claudePid))
-    .flatMap((file) => file.sessions);
-}
-
-function describeStatus(session: StateFileSession): string {
-  if (session.status === "waiting_for_input") {
-    const question = session.pendingAsk ? `: "${session.pendingAsk}"` : "";
-    return `session ${session.id} (${session.toolName}) is waiting for input${question}`;
-  }
-  return `session ${session.id} (${session.toolName}) is ${session.status}`;
 }
 
 async function main(): Promise<void> {
@@ -35,12 +20,18 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (needsAttention(sessions)) {
+    for (const session of active) console.log(describeStatus(session));
+    console.log("Answer the waiting session(s) now with the answer-session tool.");
+    return;
+  }
+
   writeWatcherFile(ancestors);
   try {
     const lastStatus = new Map(sessions.map((session) => [session.id, session.status]));
     for (const session of active) console.log(`watching ${describeStatus(session)}`);
 
-    while (active.length > 0) {
+    while (stillRunning(sessions) && !needsAttention(sessions)) {
       await sleep(pollIntervalMs);
       sessions = matchingSessions(sessionId, ancestors);
       for (const session of sessions) {
@@ -49,10 +40,13 @@ async function main(): Promise<void> {
           console.log(describeStatus(session));
         }
       }
-      active = sessions.filter((session) => ACTIVE_STATUSES.has(session.status));
     }
 
-    console.log("All watched Codex sessions have settled.");
+    console.log(
+      needsAttention(sessions)
+        ? "Answer the waiting session(s) now with the answer-session tool. Restart this watcher afterwards if other sessions are still running."
+        : "All watched Codex sessions have settled.",
+    );
   } finally {
     removeWatcherFile();
   }

@@ -43,8 +43,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
         "kind=notify is a non-blocking progress update. kind=completed or kind=failed means the session finished; use session-status or continue-session. " +
         "Without channel support, do not poll session-status in a sleep loop. A Stop hook blocks you from ending your turn while sessions you started are still active, unless a watcher is already monitoring them. " +
         "When blocked, the hook's reason gives the exact command to start one: run it via Bash with run_in_background true (this bin is also on PATH as async-codex-mcp-watch). " +
-        "It polls in the background, prints a line on every status change, and exits once all sessions settle — you'll get a task notification when it exits, or you can attach Monitor to stream its output. " +
-        "Once it's running, stopping is allowed again; when it exits, check session-status to read results.",
+        "It polls in the background, prints a line on every status change, and exits once all sessions settle or any session starts waiting for input — you'll get a task notification when it exits, or you can attach Monitor to stream its output. " +
+        "Once it's running, stopping is allowed again; when it exits, check session-status: if a session is waiting_for_input, answer it with answer-session, then restart the watcher if others are still running.",
     },
   );
   const client = options.client ?? new CodexMcpClient(config);

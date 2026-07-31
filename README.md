@@ -2,7 +2,7 @@
 
 Async Codex MCP server.
 
-This package implements an MCP server that proxies a Codex MCP server and turns blocking `codex` calls into background sessions. Configured profile tools return immediately with an async session id; clients can poll `session-status`, receive `notifications/message` completion events, and resume completed Codex sessions with `continue-session`.
+This package implements an MCP server that proxies a Codex MCP server and turns blocking `codex` calls into background sessions. Configured profile tools return immediately with an async session id; clients can inspect session state, receive completion events, and resume completed sessions even after Claude or the MCP server restarts.
 
 ## Why
 
@@ -12,6 +12,7 @@ The Codex CLI can run as an MCP server with `codex mcp-server`, exposing blockin
 - restrict caller-controlled inputs to `prompt`, `model`, and `cwd`;
 - default Codex execution to `sandboxMode: danger-full-access` and `approvalPolicy: never` for devcontainer use;
 - return immediately while Codex runs in the background;
+- persist the wrapper-to-Codex session mapping across MCP server restarts;
 - send MCP logging notifications when a background session completes or fails;
 - expose `continue-session` as a generic wrapper around `codex-reply`.
 
@@ -111,6 +112,14 @@ Each configured profile becomes an MCP tool that accepts:
 
 The profile tool returns JSON with an async `session_id` and `running` status. Use `session-status` with that id to inspect completion state. When complete, use `continue-session` with the async session id and a new `prompt` to resume the underlying Codex session.
 
+### Durable sessions
+
+The wrapper writes one atomic JSON record per async session under `${XDG_STATE_HOME:-$HOME/.local/state}/async-codex-mcp/sessions/`. Set `ASYNC_CODEX_MCP_SESSION_DIR` to override that directory. Directories are created for the current operating-system user with mode `0700`; records use mode `0600`.
+
+Completed and failed records load when a new MCP server starts. A completed record retains the native Codex thread ID, so the original async `session_id` continues to work with `session-status` and `continue-session` after Claude, the MCP server, or the device restarts.
+
+An MCP process cannot restore a live promise or callback connection. Records left as `running` or `waiting_for_input` are therefore recovered as `interrupted`; they never appear to the Stop hook or watcher as live work. Durable records contain the session prompt, result, callback messages, and working-directory metadata needed by `session-status`, but never callback bearer tokens or provider credentials. They are retained until the user removes the session directory.
+
 If a session is waiting for input, answer it with:
 
 ```json
@@ -154,20 +163,35 @@ Until channel injection is broadly available, Claude tends to start an async Cod
 
 How it works:
 
-- The MCP server persists a session snapshot on every state change to `$TMPDIR/async-codex-mcp-state/<server-pid>.json` (override the directory with `ASYNC_CODEX_MCP_STATE_DIR`), recording the `CLAUDE_CODE_SESSION_ID` and parent pid it was spawned with. The file is removed when the server shuts down.
+- The MCP server writes a temporary live-session snapshot on every state change to `$TMPDIR/async-codex-mcp-state/<server-pid>.json` (override with `ASYNC_CODEX_MCP_STATE_DIR`). This is separate from durable resumable records and contains only sessions owned by that process. The file is removed on clean shutdown.
 - On `Stop`, the hook matches snapshots against the hook's `session_id` (exact), falling back to process ancestry for cases where the session id rotates but the Claude process and its MCP server persist (e.g. `/clear`). Snapshots from dead server processes are ignored.
 - If a matched session is `waiting_for_input`, the hook always blocks — only Claude can answer it via `answer-session`.
-- If matched sessions are only `running`, the hook checks for a live watcher (below) monitoring the same session. If one exists, it stays silent and Claude stops normally. Otherwise it blocks with a summary and the exact command to start a watcher.
+- If matched sessions are only `running`, the hook computes which sessions are covered by live watchers. It blocks with the exact installed-plugin command while any session is uncovered.
 
-Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the plugin. Sessions cannot block forever: Codex runs are capped by `codex.requestTimeoutSec` and blocked asks by `callbacks.askTimeoutSec`, after which sessions transition to `failed` and the hook releases.
+Set `ASYNC_CODEX_MCP_STOP_HOOK=off` to disable the hook without uninstalling the plugin. Codex runs are capped by `codex.requestTimeoutSec`. Callback tool calls receive `callbacks.askTimeoutSec` as their Codex-side timeout; if Codex does not terminate the run after that timeout, the overall request timeout remains the final bound.
 
 ## Watching sessions in the background
 
-`codex-watch-cli.js` (bin: `async-codex-mcp-watch`) is a small CLI meant to be launched as a background shell task (e.g. Claude's `Bash` tool with `run_in_background: true`) instead of having Claude poll `session-status` in a sleep loop. On start it:
+`codex-watch-cli.js` is a small CLI meant to be launched as a background shell task instead of having Claude poll `session-status` in a sleep loop. The Stop hook prints an absolute bundled command that works from the Claude plugin cache. A global npm installation additionally exposes that CLI on `PATH` as `async-codex-mcp-watch`.
 
-- Finds sessions matching the current `CLAUDE_CODE_SESSION_ID`/process ancestry and exits immediately if none are active.
+With no arguments, the watcher covers every live session matching the current `CLAUDE_CODE_SESSION_ID` or process ancestry:
+
+```bash
+async-codex-mcp-watch
+```
+
+To cover one async wrapper session independently:
+
+```bash
+async-codex-mcp-watch --session-id <async-session-id>
+```
+
+On start it:
+
+- Excludes snapshots whose owning MCP server is dead, then selects sessions in the requested scope.
 - If a matched session is already `waiting_for_input` (Codex called `async_codex_ask_user`), it reports that immediately and exits without registering — only Claude can answer it, so there's nothing to watch in the background yet.
-- Otherwise it registers itself in `$TMPDIR/async-codex-mcp-state/watchers/<watcher-pid>.json` so the Stop hook can detect it and allow Claude to stop, then polls every `ASYNC_CODEX_MCP_WATCH_INTERVAL_MS` (default `10000`), printing a line on every status change.
+- Otherwise it registers its exact conversation or session coverage in `$TMPDIR/async-codex-mcp-state/watchers/<watcher-pid>.json`. The Stop hook allows Claude to stop only when every running session has live watcher coverage.
+- Polls every `ASYNC_CODEX_MCP_WATCH_INTERVAL_MS` (default `10000`), printing status changes and every new `notify` message in creation order. Existing notifications replay once when a watcher starts; unchanged snapshots do not duplicate them within that watcher process. Notification text can be time-sensitive.
 - Exits — removing its registration file — as soon as either every matched session has settled (`completed`/`failed`), or any session starts `waiting_for_input`. The latter needs Claude back regardless of what else is still running, so the watcher hands control back immediately rather than waiting for everything to finish.
 
 Because it's a normal background process, the harness notifies Claude when it exits (or Claude can attach `Monitor` to stream its status-change lines as they happen) — no polling loop required in the conversation itself.

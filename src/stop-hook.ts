@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { isProcessAlive } from "./process-liveness.js";
 import type { StateFile, StateFileSession } from "./state-file.js";
 import type { WatcherFile } from "./watcher-file.js";
 
@@ -11,12 +12,7 @@ export type StopHookDecision = {
 const ACTIVE_STATUSES = new Set(["running", "waiting_for_input"]);
 
 export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  return isProcessAlive(pid);
 }
 
 function parentPid(pid: number): number | undefined {
@@ -28,7 +24,9 @@ function parentPid(pid: number): number | undefined {
   } catch {
     // fall through to ps
   }
-  const result = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+  const result = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+    encoding: "utf8",
+  });
   const ppid = Number(result.stdout?.trim());
   return Number.isInteger(ppid) && ppid > 0 ? ppid : undefined;
 }
@@ -42,6 +40,17 @@ export function ancestorPids(startPid = process.pid): Set<number> {
     ancestors.add(pid);
   }
   return ancestors;
+}
+
+export function buildWatcherCommand(
+  executable: string,
+  watcherCliPath: string,
+): string {
+  return `${shellQuote(executable)} ${shellQuote(watcherCliPath)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function describe(session: StateFileSession): string {
@@ -62,21 +71,40 @@ export type StopHookContext = {
   ancestors: () => Set<number>;
 };
 
-function matchesContext(claudeSessionId: string | undefined, claudePid: number, context: StopHookContext, ancestors: Set<number>): boolean {
+function matchesContext(
+  claudeSessionId: string | undefined,
+  claudePid: number,
+  context: StopHookContext,
+  ancestors: Set<number>,
+): boolean {
   if (context.sessionId && claudeSessionId === context.sessionId) return true;
   return ancestors.has(claudePid);
 }
 
-function hasLiveWatcher(
+function watcherMatchesContext(
+  watcher: WatcherFile,
+  context: StopHookContext,
+  ancestors: Set<number>,
+): boolean {
+  if (context.sessionId && watcher.claudeSessionId === context.sessionId)
+    return true;
+  return watcher.ancestorPids.some((pid) => ancestors.has(pid));
+}
+
+function isCoveredByLiveWatcher(
+  session: StateFileSession,
   watcherFiles: WatcherFile[],
   context: StopHookContext,
   ancestors: Set<number>,
-  pidAlive: (pid: number) => boolean,
+  pidAlive: (pid: number, startToken?: string) => boolean,
 ): boolean {
   return watcherFiles.some((watcher) => {
-    if (!pidAlive(watcher.watcherPid)) return false;
-    if (context.sessionId && watcher.claudeSessionId === context.sessionId) return true;
-    return watcher.ancestorPids.some((pid) => ancestors.has(pid));
+    if (!pidAlive(watcher.watcherPid, watcher.watcherStartToken)) return false;
+    if (!watcherMatchesContext(watcher, context, ancestors)) return false;
+    return (
+      watcher.coverage.scope === "conversation" ||
+      watcher.coverage.sessionId === session.id
+    );
   });
 }
 
@@ -85,29 +113,53 @@ export function evaluateStopHook(
   watcherFiles: WatcherFile[],
   context: StopHookContext,
   watcherCommand: string,
-  pidAlive: (pid: number) => boolean = isPidAlive,
+  pidAlive: (pid: number, startToken?: string) => boolean = isProcessAlive,
 ): StopHookDecision | undefined {
   let ancestors: Set<number> | undefined;
   const resolveAncestors = () => (ancestors ??= context.ancestors());
 
   const active = files
-    .filter((file) => matchesContext(file.claudeSessionId, file.claudePid, context, resolveAncestors()) && pidAlive(file.serverPid))
-    .flatMap((file) => file.sessions.filter((session) => ACTIVE_STATUSES.has(session.status)));
+    .filter(
+      (file) =>
+        matchesContext(
+          file.claudeSessionId,
+          file.claudePid,
+          context,
+          resolveAncestors(),
+        ) && pidAlive(file.serverPid, file.serverStartToken),
+    )
+    .flatMap((file) =>
+      file.sessions.filter((session) => ACTIVE_STATUSES.has(session.status)),
+    );
 
   if (active.length === 0) return undefined;
 
-  const waiting = active.filter((session) => session.status === "waiting_for_input");
-  if (waiting.length === 0 && hasLiveWatcher(watcherFiles, context, resolveAncestors(), pidAlive)) {
+  const waiting = active.filter(
+    (session) => session.status === "waiting_for_input",
+  );
+  const uncovered = active.filter(
+    (session) =>
+      session.status === "running" &&
+      !isCoveredByLiveWatcher(
+        session,
+        watcherFiles,
+        context,
+        resolveAncestors(),
+        pidAlive,
+      ),
+  );
+  if (waiting.length === 0 && uncovered.length === 0) {
     return undefined;
   }
 
+  const reported = waiting.length > 0 ? active : uncovered;
   const reason = [
-    `Async Codex session${active.length === 1 ? "" : "s"} started from this conversation ${active.length === 1 ? "is" : "are"} still active:`,
-    ...active.map(describe),
+    `Async Codex session${reported.length === 1 ? "" : "s"} started from this conversation ${reported.length === 1 ? "is" : "are"} still active:`,
+    ...reported.map(describe),
     "",
     waiting.length > 0
       ? "Answer the waiting session(s) now with the answer-session tool, then keep monitoring."
-      : `No watcher is monitoring these sessions yet. Start one now, running in the background: \`${watcherCommand}\`. It polls until every session settles and prints status changes as they happen; you'll be notified when it exits or via its output. Once it's running, stopping is allowed again.`,
+      : `No watcher covers these sessions yet. Start a conversation watcher in the background: \`${watcherCommand}\`. To cover only one, append \`--session-id <async-session-id>\`. Watchers print status and notify events; you'll be notified when they exit or via their output.`,
     "When a session completes, read its result with session-status and report it. Only stop early if the user explicitly told you to abandon these sessions.",
   ].join("\n");
 

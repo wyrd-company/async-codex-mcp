@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StateFile } from "../src/state-file.js";
-import { evaluateStopHook } from "../src/stop-hook.js";
+import { buildWatcherCommand, evaluateStopHook } from "../src/stop-hook.js";
 import type { WatcherFile } from "../src/watcher-file.js";
 
 function stateFile(overrides: Partial<StateFile> = {}): StateFile {
@@ -16,6 +16,7 @@ function stateFile(overrides: Partial<StateFile> = {}): StateFile {
         status: "running",
         createdAt: "2026-07-02T00:00:00.000Z",
         updatedAt: "2026-07-02T00:00:00.000Z",
+        notifications: [],
       },
     ],
     ...overrides,
@@ -28,6 +29,7 @@ function watcherFile(overrides: Partial<WatcherFile> = {}): WatcherFile {
     claudeSessionId: "session-a",
     ancestorPids: [100],
     startedAt: new Date().toISOString(),
+    coverage: { scope: "conversation" },
     ...overrides,
   };
 }
@@ -39,7 +41,13 @@ const watchCommand = 'node "/plugin/dist/bundle/codex-watch-cli.js"';
 
 describe("evaluateStopHook", () => {
   it("blocks a running session with no watcher and tells Claude how to start one", () => {
-    const decision = evaluateStopHook([stateFile()], [], { sessionId: "session-a", ancestors: noAncestors }, watchCommand, alive);
+    const decision = evaluateStopHook(
+      [stateFile()],
+      [],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      alive,
+    );
     expect(decision?.decision).toBe("block");
     expect(decision?.reason).toContain("s1");
     expect(decision?.reason).toContain(watchCommand);
@@ -68,14 +76,26 @@ describe("evaluateStopHook", () => {
   });
 
   it("ignores state files whose server process is gone", () => {
-    const decision = evaluateStopHook([stateFile()], [], { sessionId: "session-a", ancestors: noAncestors }, watchCommand, dead);
+    const decision = evaluateStopHook(
+      [stateFile()],
+      [],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      dead,
+    );
     expect(decision).toBeUndefined();
   });
 
   it("allows stopping when all sessions are settled", () => {
     const settled = stateFile();
     settled.sessions[0].status = "completed";
-    const decision = evaluateStopHook([settled], [], { sessionId: "session-a", ancestors: noAncestors }, watchCommand, alive);
+    const decision = evaluateStopHook(
+      [settled],
+      [],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      alive,
+    );
     expect(decision).toBeUndefined();
   });
 
@@ -136,5 +156,86 @@ describe("evaluateStopHook", () => {
       alive,
     );
     expect(decision?.decision).toBe("block");
+  });
+
+  it("does not let a session-scoped watcher cover a sibling session", () => {
+    const file = stateFile();
+    file.sessions.push({
+      ...file.sessions[0],
+      id: "s2",
+    });
+    const decision = evaluateStopHook(
+      [file],
+      [watcherFile({ coverage: { scope: "session", sessionId: "s1" } })],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      alive,
+    );
+    expect(decision?.reason).not.toContain("s1 (");
+    expect(decision?.reason).toContain("s2 (");
+  });
+
+  it("allows independent session-scoped watchers to cover every running session", () => {
+    const file = stateFile();
+    file.sessions.push({
+      ...file.sessions[0],
+      id: "s2",
+    });
+    const decision = evaluateStopHook(
+      [file],
+      [
+        watcherFile({
+          watcherPid: 5678,
+          coverage: { scope: "session", sessionId: "s1" },
+        }),
+        watcherFile({
+          watcherPid: 5679,
+          coverage: { scope: "session", sessionId: "s2" },
+        }),
+      ],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      alive,
+    );
+    expect(decision).toBeUndefined();
+  });
+
+  it("rejects stale server and watcher identities even when their PIDs exist", () => {
+    const identityAware = (_pid: number, token?: string) =>
+      token !== "stale-token";
+    expect(
+      evaluateStopHook(
+        [stateFile({ serverStartToken: "stale-token" })],
+        [],
+        { sessionId: "session-a", ancestors: noAncestors },
+        watchCommand,
+        identityAware,
+      ),
+    ).toBeUndefined();
+
+    const decision = evaluateStopHook(
+      [stateFile({ serverStartToken: "live-token" })],
+      [
+        watcherFile({
+          watcherStartToken: "stale-token",
+          coverage: { scope: "conversation" },
+        }),
+      ],
+      { sessionId: "session-a", ancestors: noAncestors },
+      watchCommand,
+      identityAware,
+    );
+    expect(decision?.decision).toBe("block");
+  });
+});
+
+describe("buildWatcherCommand", () => {
+  it("uses the exact executable and safely quotes plugin paths", () => {
+    expect(
+      buildWatcherCommand(
+        "/node path/bin/node",
+        "/plugin's cache/codex-watch-cli.js",
+      ),
+    ).toBe("'/node path/bin/node' '/plugin'\\''s cache/codex-watch-cli.js'");
   });
 });

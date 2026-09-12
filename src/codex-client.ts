@@ -13,6 +13,8 @@ export type CodexToolArguments = { prompt: string; model?: string; cwd?: string 
 export type CodexClientLike = {
   callCodex(profile: ToolProfile, args: CodexToolArguments): Promise<CallToolResult>;
   continueSession(sessionId: string, prompt: string, cwd?: string, profile?: ToolProfile): Promise<CallToolResult>;
+  /** Stop all work owned by this client. Server rounds use separate clients. */
+  stop?(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -24,6 +26,7 @@ export class CodexAppServerClient implements CodexClientLike {
   private connection?: Promise<AppServerConnection>;
   private current?: AppServerConnection;
   private closed = false;
+  private readonly connections = new Set<AppServerConnection>();
 
   constructor(private readonly config: AsyncCodexConfig) {}
 
@@ -52,7 +55,12 @@ export class CodexAppServerClient implements CodexClientLike {
 
   async close(): Promise<void> {
     this.closed = true;
-    await this.current?.close();
+    await Promise.all([...this.connections].map(connection => connection.close()));
+  }
+
+  async stop(): Promise<void> {
+    this.closed = true;
+    await Promise.all([...this.connections].map(connection => connection.stop()));
   }
 
   private getConnection(): Promise<AppServerConnection> {
@@ -61,6 +69,8 @@ export class CodexAppServerClient implements CodexClientLike {
       const connection = new AppServerConnection(this.config, () => {
         if (this.current === connection) { this.connection = undefined; this.current = undefined; }
       });
+      this.connections.add(connection);
+      void connection.whenExited().then(() => this.connections.delete(connection));
       this.current = connection;
       this.connection = connection.initialize().then(() => connection).catch(async (error) => {
         await connection.close();
@@ -81,14 +91,15 @@ class AppServerConnection {
   private nextId = 0;
   private failure?: Error;
   private readonly exited: Promise<void>;
+  private hasExited = false;
 
   constructor(private readonly config: AsyncCodexConfig, private readonly disconnected: () => void) {
     // Translate the old explicit default as well as accepting custom launchers.
     const args = config.codex.args.map((arg) => arg === "mcp-server" ? "app-server" : arg);
     this.child = spawn(config.codex.command, args, {
-      env: { ...process.env, ...config.codex.env }, cwd: config.codex.cwd, stdio: ["pipe", "pipe", "inherit"],
+      env: { ...process.env, ...config.codex.env }, cwd: config.codex.cwd, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "inherit"],
     });
-    this.exited = new Promise((resolve) => this.child.once("close", resolve));
+    this.exited = new Promise((resolve) => this.child.once("close", () => { this.hasExited = true; resolve(); }));
     this.child.on("error", (error) => this.fail(new Error(`Cannot start Codex app-server: ${error.message}. Configure codex.command and codex.args for a CLI with app-server support.`)));
     this.child.on("close", (code, signal) => this.fail(new Error(`Codex app-server exited (code ${code}, signal ${signal}). This integration requires the app-server interface; verify codex.command and codex.args (tested with Codex 0.153.4 and 0.154.0).`)));
     this.child.stdin.on("error", (error) => this.fail(new Error(`Codex app-server input failed: ${error.message}`)));
@@ -205,9 +216,29 @@ class AppServerConnection {
     this.disconnected();
   }
 
+  whenExited(): Promise<void> { return this.exited; }
+
+  private signal(signal: NodeJS.Signals): void {
+    if (this.hasExited || !this.child.pid) return;
+    try {
+      if (process.platform === "win32") this.child.kill(signal);
+      else process.kill(-this.child.pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+
+  async stop(): Promise<void> {
+    // Each server round owns this process group. Kill also covers initialization
+    // before a thread/turn id exists, and never tears down another round.
+    this.signal("SIGKILL");
+    this.fail(new Error("Codex app-server session stopped."));
+    await this.exited;
+  }
+
   async close(): Promise<void> {
+    this.signal("SIGTERM");
     this.fail(new Error("Codex app-server connection closed."));
-    this.child.kill();
     await this.exited;
   }
 }

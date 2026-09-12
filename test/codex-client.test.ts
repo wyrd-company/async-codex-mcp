@@ -90,6 +90,30 @@ describe("Codex app-server process adapter", () => {
   await client.close();
   await assertion;
  });
+ it.skipIf(process.platform !== "linux")("kills the owned process group including an attached child",async()=>{
+  const directory=fs.mkdtempSync('/tmp/codex-process-group-');
+  const marker=directory+'/pids.json';
+  const config=loadConfig();
+  config.codex.command=process.execPath;
+  config.codex.env={GROUP_MARKER:marker};
+  config.codex.args=['-e',`const fs=require('fs');const child=require('child_process').spawn(process.execPath,['-e','process.stdin.resume()']);fs.writeFileSync(process.env.GROUP_MARKER,JSON.stringify({parent:process.pid,child:child.pid}));process.stdin.resume()`];
+  const client=new CodexAppServerClient(config);clients.push(client);
+  const pending=client.callCodex(config.tools.codex,{prompt:'sample'});
+  const rejected=expect(pending).rejects.toThrow(/stopped/);
+  let pids:{parent:number;child:number}|undefined;
+  const executing=(pid:number)=>{try{return fs.readFileSync(`/proc/${pid}/stat`,'utf8').split(') ')[1][0]!=='Z';}catch{return false;}};
+  try{
+   await expect.poll(()=>fs.existsSync(marker)).toBe(true);
+   pids=JSON.parse(fs.readFileSync(marker,'utf8'));
+   expect(executing(pids!.child)).toBe(true);
+   await client.stop();await rejected;
+   await expect.poll(()=>executing(pids!.child)).toBe(false);
+   expect(executing(pids!.parent)).toBe(false);
+  }finally{
+   if(pids){try{process.kill(-pids.parent,'SIGKILL');}catch{}}
+   await client.close();fs.rmSync(directory,{recursive:true,force:true});
+  }
+ });
  it("uses app-server by default and translates explicit legacy launch arguments",async()=>{
   expect(loadConfig().codex.args).toEqual(['app-server']);
   const {client,profile}=setup(['-e','if(process.argv[1]!=="app-server")process.exit(2);import(process.env.APP_SERVER_FIXTURE)','--','mcp-server']);

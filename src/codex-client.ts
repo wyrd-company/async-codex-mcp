@@ -113,7 +113,7 @@ class AppServerConnection {
 
   async initialize(): Promise<void> {
     try {
-      await this.request("initialize", { clientInfo: { name: "async_codex_mcp", version: "0.6.0" } }, DEFAULT_REQUEST_TIMEOUT_MSEC);
+      await this.request("initialize", { clientInfo: { name: "async_codex_mcp", version: "0.7.0" } }, DEFAULT_REQUEST_TIMEOUT_MSEC);
       this.send({ method: "initialized", params: {} });
     } catch (error) {
       throw new Error(`Codex app-server initialization failed: ${error instanceof Error ? error.message : String(error)}`);

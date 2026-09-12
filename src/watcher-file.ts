@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { processStartToken } from "./process-liveness.js";
+import { isProcessAlive, processStartToken } from "./process-liveness.js";
+import {
+  recoverRetentionArtifacts,
+  removeFileAtomicallyIf,
+} from "./retention.js";
 import { stateDir } from "./state-file.js";
 
 export type WatcherFile = {
@@ -27,6 +31,7 @@ export function writeWatcherFile(
   ancestors: Set<number>,
   coverage: WatcherCoverage,
 ): void {
+  reapStaleWatcherFiles();
   const snapshot: WatcherFile = {
     watcherPid: process.pid,
     watcherStartToken: processStartToken(process.pid),
@@ -48,13 +53,58 @@ export function removeWatcherFile(): void {
 }
 
 export function readWatcherFiles(): WatcherFile[] {
+  reapStaleWatcherFiles();
+  return readCurrentWatcherFiles();
+}
+
+export function reapStaleWatcherFiles(
+  ownerAlive: (pid: number, startToken?: string) => boolean = isProcessAlive,
+): number {
+  recoverRetentionArtifacts(watcherDir());
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(watcherDir());
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!/^\d+\.json$/.test(entry)) continue;
+    const file = path.join(watcherDir(), entry);
+    try {
+      const parsed = parseWatcherFile(
+        JSON.parse(fs.readFileSync(file, "utf8")),
+      );
+      if (!parsed || parsed.watcherPid !== Number.parseInt(entry, 10)) continue;
+      if (ownerAlive(parsed.watcherPid, parsed.watcherStartToken)) continue;
+      if (
+        removeFileAtomicallyIf(file, (contents) => {
+          const current = parseWatcherFile(JSON.parse(contents));
+          return Boolean(
+            current &&
+            current.watcherPid === parsed.watcherPid &&
+            current.watcherStartToken === parsed.watcherStartToken &&
+            !ownerAlive(current.watcherPid, current.watcherStartToken),
+          );
+        })
+      ) {
+        removed += 1;
+      }
+    } catch {
+      // Partially written or corrupt snapshots are ignored.
+    }
+  }
+  return removed;
+}
+
+function readCurrentWatcherFiles(): WatcherFile[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(watcherDir());
   } catch {
     return [];
   }
-
   const files: WatcherFile[] = [];
   for (const entry of entries) {
     if (!/^\d+\.json$/.test(entry)) continue;

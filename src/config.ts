@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { DEFAULT_RETENTION_POLICY } from "./retention.js";
 
 const stringRecordSchema = z.record(z.string(), z.string());
 const unknownRecordSchema = z.record(z.string(), z.unknown());
@@ -14,34 +15,67 @@ const codexServerSchema = z.object({
   requestTimeoutSec: z.number().int().positive().default(86400),
 });
 
-const callbacksSchema = z.object({
-  enabled: z.boolean().default(true),
-  askTimeoutSec: z.number().int().positive().default(3600),
-}).strict();
+const callbacksSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    askTimeoutSec: z.number().int().positive().default(3600),
+  })
+  .strict();
 
-const profileCallbacksSchema = z.object({
-  enabled: z.boolean().optional(),
-  askTimeoutSec: z.number().int().positive().optional(),
-}).strict();
+const profileCallbacksSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    askTimeoutSec: z.number().int().positive().optional(),
+  })
+  .strict();
 
-const profileSchema = z.object({
-  description: z.string().optional(),
-  model: z.string().optional(),
-  approvalPolicy: z.string().default("never"),
-  sandboxMode: z.string().default("danger-full-access"),
-  baseInstructions: z.string().optional(),
-  compactPrompt: z.string().optional(),
-  developerInstructions: z.string().optional(),
-  config: unknownRecordSchema.default({}),
-  callbacks: profileCallbacksSchema.optional(),
-}).strict();
+const profileSchema = z
+  .object({
+    description: z.string().optional(),
+    model: z.string().optional(),
+    approvalPolicy: z.string().default("never"),
+    sandboxMode: z.string().default("danger-full-access"),
+    baseInstructions: z.string().optional(),
+    compactPrompt: z.string().optional(),
+    developerInstructions: z.string().optional(),
+    config: unknownRecordSchema.default({}),
+    callbacks: profileCallbacksSchema.optional(),
+  })
+  .strict();
+
+const retentionSchema = z
+  .object({
+    maxAgeDays: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RETENTION_POLICY.maxAgeDays),
+    maxRecords: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RETENTION_POLICY.maxRecords),
+    protectRecentDays: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RETENTION_POLICY.protectRecentDays),
+  })
+  .strict();
 
 const configSchema = z.object({
-  codex: codexServerSchema.default({ command: "codex", args: ["app-server"], env: {}, requestTimeoutSec: 86400 }),
+  codex: codexServerSchema.default({
+    command: "codex",
+    args: ["app-server"],
+    env: {},
+    requestTimeoutSec: 86400,
+  }),
   callbacks: callbacksSchema.default({ enabled: true, askTimeoutSec: 3600 }),
+  retention: retentionSchema.default(DEFAULT_RETENTION_POLICY),
   tools: z.record(z.string(), profileSchema).default({
     codex: {
-      description: "Run Codex asynchronously with danger-full-access sandboxing.",
+      description:
+        "Run Codex asynchronously with danger-full-access sandboxing.",
       sandboxMode: "danger-full-access",
       approvalPolicy: "never",
       config: {},
@@ -49,10 +83,15 @@ const configSchema = z.object({
   }),
 });
 
-export type AsyncCodexConfig = z.infer<typeof configSchema>;
+type ParsedAsyncCodexConfig = z.infer<typeof configSchema>;
+export type AsyncCodexConfig = Omit<ParsedAsyncCodexConfig, "retention"> & {
+  // Optional for callers that construct configuration objects directly.
+  // loadConfig always materializes the default policy.
+  retention?: ParsedAsyncCodexConfig["retention"];
+};
 export type ToolProfile = z.infer<typeof profileSchema>;
 
-export function loadConfig(configPath?: string): AsyncCodexConfig {
+export function loadConfig(configPath?: string): ParsedAsyncCodexConfig {
   const resolvedPath = configPath ?? process.env.ASYNC_CODEX_MCP_CONFIG;
   if (!resolvedPath) {
     return configSchema.parse({});
@@ -63,7 +102,10 @@ export function loadConfig(configPath?: string): AsyncCodexConfig {
   const parsed = configSchema.parse(loaded);
 
   if (parsed.codex.cwd && !path.isAbsolute(parsed.codex.cwd)) {
-    parsed.codex.cwd = path.resolve(path.dirname(resolvedPath), parsed.codex.cwd);
+    parsed.codex.cwd = path.resolve(
+      path.dirname(resolvedPath),
+      parsed.codex.cwd,
+    );
   }
 
   return parsed;

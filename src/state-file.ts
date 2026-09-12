@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { processStartToken } from "./process-liveness.js";
+import { isProcessAlive, processStartToken } from "./process-liveness.js";
+import {
+  recoverRetentionArtifacts,
+  removeFileAtomicallyIf,
+} from "./retention.js";
 import type { SessionRecord } from "./session-store.js";
 
 export type StateFileSession = {
@@ -42,6 +46,7 @@ function stateFilePath(serverPid: number): string {
 }
 
 export function writeStateFile(sessions: Iterable<SessionRecord>): void {
+  reapStaleStateFiles();
   const snapshot: StateFile = {
     serverPid: process.pid,
     serverStartToken: processStartToken(process.pid),
@@ -82,13 +87,56 @@ export function removeStateFile(): void {
 }
 
 export function readStateFiles(): StateFile[] {
+  reapStaleStateFiles();
+  return readCurrentStateFiles();
+}
+
+export function reapStaleStateFiles(
+  ownerAlive: (pid: number, startToken?: string) => boolean = isProcessAlive,
+): number {
+  recoverRetentionArtifacts(stateDir());
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(stateDir());
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!/^\d+\.json$/.test(entry)) continue;
+    const file = path.join(stateDir(), entry);
+    try {
+      const parsed = parseStateFile(JSON.parse(fs.readFileSync(file, "utf8")));
+      if (!parsed || parsed.serverPid !== Number.parseInt(entry, 10)) continue;
+      if (ownerAlive(parsed.serverPid, parsed.serverStartToken)) continue;
+      if (
+        removeFileAtomicallyIf(file, (contents) => {
+          const current = parseStateFile(JSON.parse(contents));
+          return Boolean(
+            current &&
+            current.serverPid === parsed.serverPid &&
+            current.serverStartToken === parsed.serverStartToken &&
+            !ownerAlive(current.serverPid, current.serverStartToken),
+          );
+        })
+      ) {
+        removed += 1;
+      }
+    } catch {
+      // Partially written or corrupt snapshots are ignored.
+    }
+  }
+  return removed;
+}
+
+function readCurrentStateFiles(): StateFile[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(stateDir());
   } catch {
     return [];
   }
-
   const files: StateFile[] = [];
   for (const entry of entries) {
     if (!/^\d+\.json$/.test(entry)) continue;

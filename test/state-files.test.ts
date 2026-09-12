@@ -5,11 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionRecord } from "../src/session-store.js";
 import {
   readStateFiles,
+  reapStaleStateFiles,
   removeStateFile,
   writeStateFile,
 } from "../src/state-file.js";
 import {
   readWatcherFiles,
+  reapStaleWatcherFiles,
   removeWatcherFile,
   writeWatcherFile,
 } from "../src/watcher-file.js";
@@ -96,4 +98,81 @@ describe("live state projections", () => {
       }),
     );
   });
+
+  it("reaps dead and PID-reused server snapshots but preserves live owners", () => {
+    writeServerSnapshot(101, "old");
+    writeServerSnapshot(202, "current");
+    writeServerSnapshot(303, "current");
+
+    const removed = reapStaleStateFiles(
+      (pid, token) => pid === 202 && token === "current",
+    );
+
+    expect(removed).toBe(2);
+    expect(
+      fs.readdirSync(directory).filter((entry) => entry.endsWith(".json")),
+    ).toEqual(["202.json"]);
+  });
+
+  it("reaps dead and PID-reused watcher snapshots but preserves live owners", () => {
+    const watchers = path.join(directory, "watchers");
+    fs.mkdirSync(watchers);
+    writeWatcherSnapshot(watchers, 101, "old");
+    writeWatcherSnapshot(watchers, 202, "current");
+    writeWatcherSnapshot(watchers, 303, "current");
+
+    const removed = reapStaleWatcherFiles(
+      (pid, token) => pid === 202 && token === "current",
+    );
+
+    expect(removed).toBe(2);
+    expect(
+      fs.readdirSync(watchers).filter((entry) => entry.endsWith(".json")),
+    ).toEqual(["202.json"]);
+  });
+
+  it("leaves malformed temporary snapshots untouched", () => {
+    fs.writeFileSync(path.join(directory, "101.json"), "{");
+    fs.mkdirSync(path.join(directory, "watchers"));
+    fs.writeFileSync(path.join(directory, "watchers", "202.json"), "{");
+
+    expect(reapStaleStateFiles(() => false)).toBe(0);
+    expect(reapStaleWatcherFiles(() => false)).toBe(0);
+    expect(fs.existsSync(path.join(directory, "101.json"))).toBe(true);
+    expect(fs.existsSync(path.join(directory, "watchers", "202.json"))).toBe(
+      true,
+    );
+  });
+
+  function writeServerSnapshot(pid: number, startToken: string): void {
+    fs.writeFileSync(
+      path.join(directory, `${pid}.json`),
+      JSON.stringify({
+        serverPid: pid,
+        serverStartToken: startToken,
+        claudePid: 1,
+        updatedAt: new Date().toISOString(),
+        sessions: [],
+      }),
+      { mode: 0o600 },
+    );
+  }
+
+  function writeWatcherSnapshot(
+    watchers: string,
+    pid: number,
+    startToken: string,
+  ): void {
+    fs.writeFileSync(
+      path.join(watchers, `${pid}.json`),
+      JSON.stringify({
+        watcherPid: pid,
+        watcherStartToken: startToken,
+        ancestorPids: [],
+        startedAt: new Date().toISOString(),
+        coverage: { scope: "conversation" },
+      }),
+      { mode: 0o600 },
+    );
+  }
 });

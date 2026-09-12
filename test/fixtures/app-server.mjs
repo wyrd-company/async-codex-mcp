@@ -1,0 +1,34 @@
+// ---
+// relationships:
+//   references: codex-client
+// ---
+import readline from 'node:readline';
+let initialized = false;
+let sequence = 0;
+const threads = new Map();
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+ const request = JSON.parse(line);
+ const {id, method, params} = request;
+ if (method === 'initialize') return send({id, result: {userAgent:'fixture'}});
+ if (method === 'initialized') { initialized = true; return; }
+ if (!initialized) return send({id,error:{code:-32600,message:'Not initialized'}});
+ if (method === 'thread/start') {
+  const threadId = `thread-${++sequence}`;
+  threads.set(threadId, params);
+  return send({id,result:{thread:{id:threadId}}});
+ }
+ if (method === 'thread/resume') { threads.set(params.threadId, {resumed:true,cwd:params.cwd}); return send({id,result:{thread:{id:params.threadId}}}); }
+ if (method === 'turn/start') {
+  const text = params.input[0].text;
+  if(text === 'crash') return process.exit(7);
+  if(text === 'invalid') return process.stdout.write('not-json\n');
+  if(text === 'hold') return;
+  if(text === 'rpc-error') return send({id,error:{code:-32602,message:'Invalid turn'}});
+  const turnId = `turn-${params.threadId}`;
+  send({method:'item/completed',params:{threadId:params.threadId,turnId,item:{id:'message',type:'agentMessage',text:JSON.stringify({text,profile:threads.get(params.threadId)})}}});
+  send({method:'turn/completed',params:{threadId:params.threadId,turn:{id:turnId,status:text === 'fail' ? 'failed' : text === 'interrupt' ? 'interrupted' : 'completed',items:[],error:text==='fail'?{message:'fixture failure'}:null}}});
+  // Deliberately complete before acknowledging turn/start.
+  send({id,result:{turn:{id:turnId,status:'inProgress'}}});
+ }
+});

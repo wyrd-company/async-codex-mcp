@@ -8,7 +8,7 @@ const unknownRecordSchema = z.record(z.string(), z.unknown());
 
 const codexServerSchema = z.object({
   command: z.string().default("codex"),
-  args: z.array(z.string()).default(["mcp-server"]),
+  args: z.array(z.string()).default(["app-server"]),
   env: stringRecordSchema.default({}),
   cwd: z.string().optional(),
   requestTimeoutSec: z.number().int().positive().default(86400),
@@ -37,7 +37,7 @@ const profileSchema = z.object({
 }).strict();
 
 const configSchema = z.object({
-  codex: codexServerSchema.default({ command: "codex", args: ["mcp-server"], env: {}, requestTimeoutSec: 86400 }),
+  codex: codexServerSchema.default({ command: "codex", args: ["app-server"], env: {}, requestTimeoutSec: 86400 }),
   callbacks: callbacksSchema.default({ enabled: true, askTimeoutSec: 3600 }),
   tools: z.record(z.string(), profileSchema).default({
     codex: {

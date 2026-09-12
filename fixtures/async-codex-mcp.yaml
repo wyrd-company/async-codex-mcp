@@ -1,6 +1,6 @@
 codex:
   command: codex
-  args: [mcp-server]
+  args: [app-server]
 tools:
   codex-write:
     description: Run Codex asynchronously with full filesystem access.

@@ -94,13 +94,13 @@ describe("async-codex-mcp server", () => {
     expect(fake.calls[0].args).toEqual({ prompt: "build this", model: "gpt-5.4-mini", cwd: "/tmp/project" });
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123", content: "done" } });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, startedPayload.session_id, "completed");
 
     const status = await client.callTool("session-status", { session_id: startedPayload.session_id });
     const statusPayload = JSON.parse(textOf(status));
     expect(statusPayload.status).toBe("completed");
     expect(statusPayload.codexSessionId).toBe("codex-123");
-    expect(notifications.some((message) => message.method === "notifications/message" && message.params.data.session_id === startedPayload.session_id)).toBe(true);
+    await expect.poll(() => notifications.some((message) => message.method === "notifications/message" && message.params.data.session_id === startedPayload.session_id)).toBe(true);
 
     const continued = await client.callTool("continue-session", { session_id: startedPayload.session_id, prompt: "next" });
     expect(textOf(continued)).toBe("continued codex-123: next");
@@ -117,7 +117,7 @@ describe("async-codex-mcp server", () => {
     const started = await client.callTool("codex-write", { prompt: "build this", cwd: "/tmp/project" });
     const { session_id } = JSON.parse(textOf(started));
     originalCodex.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-persisted" } });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, session_id, "completed");
     await close(server.server as never);
     server = undefined;
 
@@ -140,7 +140,7 @@ describe("async-codex-mcp server", () => {
     const started = await client.callTool("codex-write", { prompt: "fail" });
     const { session_id } = JSON.parse(textOf(started));
     fake.rejectRun(new Error("boom"));
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, session_id, "failed");
 
     const status = await client.callTool("session-status", { session_id });
     const payload = JSON.parse(textOf(status));
@@ -156,7 +156,7 @@ describe("async-codex-mcp server", () => {
     const started = await client.callTool("codex-write", { prompt: "fail as result" });
     const { session_id } = JSON.parse(textOf(started));
     fake.resolveRun({ content: [{ type: "text", text: "Codex rejected the request" }], isError: true });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, session_id, "failed");
 
     const status = await client.callTool("session-status", { session_id });
     const payload = JSON.parse(textOf(status));
@@ -171,7 +171,7 @@ describe("async-codex-mcp server", () => {
     await connect(server.server as never);
 
     await close(server.server as never);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect.poll(() => fake.closeCalls).toBe(1);
 
     expect(fake.closeCalls).toBe(1);
     server = undefined;
@@ -200,7 +200,7 @@ describe("async-codex-mcp server", () => {
       body: JSON.stringify({ session_id, round: 1, message: "Which target?", context: "Found staging and production." }),
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, session_id, "waiting_for_input");
     const waitingStatus = await client.callTool("session-status", { session_id });
     const waitingPayload = JSON.parse(textOf(waitingStatus));
     expect(waitingPayload.status).toBe("waiting_for_input");
@@ -230,7 +230,7 @@ describe("async-codex-mcp server", () => {
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
       body: JSON.stringify({ session_id, round: 1, message: "Which target?" }),
     });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForStatus(client, session_id, "waiting_for_input");
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-final" } });
     const askResponse = await askPromise;
@@ -260,12 +260,12 @@ describe("async-codex-mcp server", () => {
       expect(state.sessions).toEqual([expect.objectContaining({ id: session_id, status: "running" })]);
 
       fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await waitForStatus(client, session_id, "completed");
       state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
       expect(state.sessions[0].status).toBe("completed");
 
       await close(server.server as never);
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await expect.poll(() => fs.existsSync(stateFile)).toBe(false);
       server = undefined;
       expect(fs.existsSync(stateFile)).toBe(false);
     } finally {
@@ -294,17 +294,19 @@ describe("async-codex-mcp server", () => {
       body: JSON.stringify({ session_id, round: 1, message: "halfway done", topic: "progress" }),
     });
 
-    const askPromise = fetch(`${callback.url}/ask`, {
+    // Force delivery later than the former 5 ms readiness guess.
+    const askPromise = new Promise<void>((resolve) => setTimeout(resolve, 25)).then(() => fetch(`${callback.url}/ask`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
       body: JSON.stringify({ session_id, round: 1, message: "Which target?", context: "Found staging and production." }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await client.callTool("answer-session", { session_id, message: "Use staging." });
+    }));
+    await waitForStatus(client, session_id, "waiting_for_input");
+    const answer = await client.callTool("answer-session", { session_id, message: "Use staging." });
+    expect(answer.isError).not.toBe(true);
     await askPromise;
 
     fake.resolveRun({ content: [{ type: "text", text: "done" }], structuredContent: { threadId: "codex-123" } });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect.poll(() => channelEvents.map((event) => event.meta.kind)).toEqual(["notify", "ask", "completed"]);
 
     expect(channelEvents.map((event) => event.meta.kind)).toEqual(["notify", "ask", "completed"]);
     expect(channelEvents[0]).toEqual({ content: "halfway done", meta: { session_id, kind: "notify", topic: "progress" } });
@@ -358,4 +360,8 @@ function callbackConnection(profile: ToolProfile): { url: string; token: string 
     url: args[args.indexOf("--url") + 1],
     token: args[args.indexOf("--token") + 1],
   };
+}
+
+async function waitForStatus(client: Awaited<ReturnType<typeof connect>>, sessionId: string, status: string): Promise<void> {
+  await expect.poll(async () => JSON.parse(textOf(await client.callTool("session-status", {session_id: sessionId}))).status).toBe(status);
 }

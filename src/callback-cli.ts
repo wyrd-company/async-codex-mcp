@@ -9,7 +9,7 @@ const options = parseArgs(process.argv.slice(2));
 
 const handle = serveStdio(() => {
   const server = new McpServer(
-    { name: "async-codex-mcp-callback", version: "0.7.0" },
+    { name: "async-codex-mcp-callback", version: "0.7.1" },
     {
       instructions:
         "Use async_codex_ask_user only when you need a user answer before continuing. Use async_codex_notify_user for non-blocking progress updates or FYIs.",

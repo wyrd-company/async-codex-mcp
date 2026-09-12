@@ -34,7 +34,7 @@ export type CreateServerOptions = {
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.7.0" },
+    { name: "async-codex-mcp", version: "0.7.1" },
     {
       capabilities: options.protocolEra === "modern" ? {} : { logging: {}, experimental: { "claude/channel": {} } },
       instructions:

@@ -71,7 +71,7 @@ describe("async-codex-mcp server", () => {
     const client = await connect(server.server as never);
 
     const tools = await client.listTools();
-    expect(tools.tools.map((tool: Tool) => tool.name).sort()).toEqual(["answer-session", "codex-write", "continue-session", "session-status"]);
+    expect(tools.tools.map((tool: Tool) => tool.name).sort()).toEqual(["answer-session", "codex-write", "continue-session", "session-status", "stop-session"]);
   });
 
   it("starts Codex asynchronously, records completion, and resumes the Codex session", async () => {

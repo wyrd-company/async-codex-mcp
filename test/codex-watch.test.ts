@@ -44,6 +44,12 @@ describe("needsAttention", () => {
 });
 
 describe("stillRunning", () => {
+  it("settles a stopped session without asking for attention", () => {
+    const stopped = session({status:"stopped"});
+    expect(stillRunning([stopped])).toBe(false);
+    expect(needsAttention([stopped])).toBe(false);
+    expect(describeStatus(stopped)).toContain("is stopped");
+  });
   it("is true when any session is running", () => {
     expect(
       stillRunning([

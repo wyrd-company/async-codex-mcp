@@ -96,7 +96,7 @@ describe("Codex app-server process adapter", () => {
   const config=loadConfig();
   config.codex.command=process.execPath;
   config.codex.env={GROUP_MARKER:marker};
-  config.codex.args=['-e',`const fs=require('fs');const child=require('child_process').spawn(process.execPath,['-e','process.stdin.resume()']);fs.writeFileSync(process.env.GROUP_MARKER,JSON.stringify({parent:process.pid,child:child.pid}));process.stdin.resume()`];
+  config.codex.args=['-e',`const fs=require('fs');const child=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)']);fs.writeFileSync(process.env.GROUP_MARKER,JSON.stringify({parent:process.pid,child:child.pid}));process.stdin.resume()`];
   const client=new CodexAppServerClient(config);clients.push(client);
   const pending=client.callCodex(config.tools.codex,{prompt:'sample'});
   const rejected=expect(pending).rejects.toThrow(/stopped/);

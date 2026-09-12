@@ -66,10 +66,9 @@ function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
-async function postCallback<T = unknown>(path: "/ask" | "/notify" | "/lifecycle", body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+async function postCallback<T = unknown>(path: "/ask" | "/notify", body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${options.url}${path}`, {
     method: "POST",
-    signal,
     headers: {
       authorization: `Bearer ${options.token}`,
       "content-type": "application/json",

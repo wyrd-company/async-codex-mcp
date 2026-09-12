@@ -21,6 +21,8 @@ export type CallbackHubConnection = {
 
 export class CallbackHub {
   private server?: http.Server;
+  private closed = false;
+  private closing?: Promise<void>;
   private connection?: CallbackHubConnection;
   private starting?: Promise<CallbackHubConnection>;
   private readonly rounds = new Map<string, Set<http.ServerResponse>>();
@@ -30,11 +32,14 @@ export class CallbackHub {
   constructor(private readonly handlers: CallbackHubHandlers) {}
 
   ensureStarted(): Promise<CallbackHubConnection> {
+    if (this.closed) return Promise.reject(new Error("Callback hub is closed."));
     return this.starting ??= this.start().catch((error) => { this.starting = undefined; throw error; });
   }
 
   beginRound(sessionId: string, round: number): void {
-    this.rounds.set(`${sessionId}:${round}`, new Set());
+    if (this.closed) throw new Error("Callback hub is closed.");
+    const key = `${sessionId}:${round}`;
+    if (!this.rounds.has(key)) this.rounds.set(key, new Set());
   }
 
   endRound(sessionId: string, round: number): void {
@@ -72,7 +77,13 @@ export class CallbackHub {
     return this.connection;
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.closed = true;
+    return this.closing ??= this.closeServer();
+  }
+
+  private async closeServer(): Promise<void> {
+    await this.starting?.catch(() => {});
     if (!this.server) return;
     const server = this.server;
     this.server = undefined;
@@ -148,6 +159,7 @@ export class CallbackHub {
   }
 
   private writeJson(response: http.ServerResponse, statusCode: number, body: unknown): void {
+    if (response.destroyed || response.writableEnded) return;
     response.writeHead(statusCode, { "content-type": "application/json" });
     response.end(JSON.stringify(body));
   }

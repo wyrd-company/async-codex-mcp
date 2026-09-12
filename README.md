@@ -128,7 +128,7 @@ The wrapper writes one atomic JSON record per async session under `${XDG_STATE_H
 
 Completed and failed records load when a new MCP server starts. A completed record retains the native Codex thread ID, so the original async `session_id` continues to work with `session-status` and `continue-session` after Claude, the MCP server, or the device restarts.
 
-An MCP process cannot restore a live promise or callback connection. Records left as `running` or `waiting_for_input` are therefore recovered as `interrupted`; they never appear to the Stop hook or watcher as live work. Durable records contain the session prompt, result, callback messages, and working-directory metadata needed by `session-status`, but never callback bearer tokens or provider credentials.
+An MCP process cannot restore a live promise or callback connection. Records left as `running` or `waiting_for_input` whose owning process is no longer live are recovered as `interrupted`; they never appear to the Stop hook or watcher as live work. Durable records contain the session prompt, result, callback messages, and working-directory metadata needed by `session-status`, but never callback bearer tokens or provider credentials.
 
 ### Session retention
 
@@ -166,7 +166,7 @@ The server declares the experimental `claude/channel` capability. When a session
 
 - `kind="notify"`: non-blocking progress update (with a `topic` attribute when set)
 - `kind="ask"`: Codex is blocked waiting for input; Claude answers with `answer-session`
-- `kind="completed"` / `kind="failed"`: the session finished
+- `kind="completed"` / `kind="failed"` / `kind="stopped"`: the session finished
 
 Channels are a Claude Code research preview (v2.1.80+). This plugin is not on the Anthropic-curated channel allowlist, so each session must opt in with the development flag:
 
@@ -219,7 +219,7 @@ On start it:
 - If a matched session is already `waiting_for_input` (Codex called `async_codex_ask_user`), it reports that immediately and exits without registering — only Claude can answer it, so there's nothing to watch in the background yet.
 - Otherwise it registers its exact conversation or session coverage in `$TMPDIR/async-codex-mcp-state/watchers/<watcher-pid>.json`. The Stop hook allows Claude to stop only when every running session has live watcher coverage.
 - Polls every `ASYNC_CODEX_MCP_WATCH_INTERVAL_MS` (default `10000`), printing status changes and every new `notify` message in creation order. Existing notifications replay once when a watcher starts; unchanged snapshots do not duplicate them within that watcher process. Notification text can be time-sensitive.
-- Exits — removing its registration file — as soon as either every matched session has settled (`completed`/`failed`), or any session starts `waiting_for_input`. The latter needs Claude back regardless of what else is still running, so the watcher hands control back immediately rather than waiting for everything to finish.
+- Exits — removing its registration file — as soon as either every matched session has settled (`completed`/`failed`/`interrupted`/`stopped`), or any session starts `waiting_for_input`. The latter needs Claude back regardless of what else is still running, so the watcher hands control back immediately rather than waiting for everything to finish.
 
 Because it's a normal background process, the harness notifies Claude when it exits (or Claude can attach `Monitor` to stream its status-change lines as they happen) — no polling loop required in the conversation itself.
 
@@ -243,3 +243,9 @@ The test suite uses ThoughtSpot's `mcp-testing-kit` transport approach to exerci
 A session retains its wrapper ID and native Codex thread ID across continuations. `round` starts at 1 and increases for each continuation. `session-status` reports the current round; a running continuation clears the previous result, then stores its new result or failure. Continuation remains a blocking MCP call. Channels and the watcher also observe its running, waiting, and terminal transitions.
 
 Each active round owns an app-server process. A continuation resumes the durable native thread in a fresh process with current callback configuration. This avoids the app-server behavior that ignores configuration overrides on already-loaded threads. Callback processes receive a round-scoped lifecycle response when the round ends and exit even if their stdin remains open. Delayed callbacks from an earlier round cannot change the current round.
+
+### Stopping a session
+
+Call `stop-session` with `session_id` to stop a `running` or `waiting_for_input` session through the MCP server that owns its active round. The tool terminates that round's app-server process and waits for process exit before returning `stopped`. Other sessions keep their own processes. Pending questions are rejected, callbacks close, and `stopped` is terminal for notifications, the Stop hook, and the watcher. Unknown or terminal sessions return an error without changing the record; `answer-session` and `continue-session` reject stopped sessions.
+
+The app-server exposes `turn/interrupt`, which requires a thread and turn ID. Explicit stop uses process termination so it also works during initialization, before those IDs exist. On POSIX systems, the round owns a process group and stop sends `SIGKILL` to that group. On Windows, stop terminates the app-server child process. Stop cannot undo completed side effects or guarantee termination of independently detached or remote work. Custom injected library clients must implement `stop()` with isolated ownership to expose this operation.

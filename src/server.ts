@@ -28,6 +28,7 @@ const answerShape = {
 
 export type CreateServerOptions = {
   client?: CodexClientLike;
+  clientFactory?: () => CodexClientLike;
   store?: SessionStore;
   protocolEra?: ProtocolEra;
 };
@@ -41,7 +42,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
         "Starts Codex sub-agent sessions asynchronously. Profile tools return immediately with an async session id; use continue-session after completion to resume. " +
         'If this server runs as a Claude Code channel (requires an Anthropic account with channel support enabled), session events arrive as <channel source="async-codex-mcp" session_id="..." kind="...">. ' +
         "kind=ask means Codex is blocked waiting for input: call answer-session with the session_id from the tag. " +
-        "kind=notify is a non-blocking progress update. kind=completed or kind=failed means the session finished; use session-status or continue-session. " +
+        "kind=notify is a non-blocking progress update. kind=completed, kind=failed, or kind=stopped means the session finished; use session-status. Only completed sessions can be continued. Call stop-session to terminate a running or waiting session. " +
         "Without channel support, do not poll session-status in a sleep loop. A Stop hook blocks you from ending your turn while sessions you started are still active, unless a watcher is already monitoring them. " +
         "When blocked, the hook's reason gives an absolute command that works from the installed plugin: run it via Bash with run_in_background true. Global npm installs also expose async-codex-mcp-watch on PATH. " +
         "The default watcher covers the conversation; add --session-id <async-session-id> to cover only one session. It prints status changes and notify messages, and exits once its covered sessions settle or need input. " +
@@ -51,7 +52,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   const notificationsEnabled = options.protocolEra !== "modern";
   const clients = new Set<CodexClientLike>();
   if (options.client) clients.add(options.client);
-  const store = options.store ?? new SessionStore();
+  const store = options.store ?? new SessionStore({ retention: config.retention });
   store.onChange = (current) => {
     try {
       writeStateFile(current.ownedSessions());
@@ -59,17 +60,22 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
       server.server.onerror?.(error instanceof Error ? error : new Error(String(error)));
     }
   };
+  function reportError(error: unknown): void {
+    try { server.server.onerror?.(error instanceof Error ? error : new Error(String(error))); } catch { /* observer */ }
+  }
   const callbackHub = new CallbackHub({
     ask: async ({ sessionId, message, context }) => {
       const ask = store.ask(sessionId, { message, context });
-      if (notificationsEnabled) await sendCallbackNotification(server, sessionId, "ask", message, { context });
+      if (notificationsEnabled) void sendCallbackNotification(server, sessionId, "ask", message, { context }).catch(reportError);
       return ask.response;
     },
     notify: async ({ sessionId, message, topic }) => {
       store.notify(sessionId, { message, topic });
-      if (notificationsEnabled) await sendCallbackNotification(server, sessionId, "notify", message, { topic });
+      if (notificationsEnabled) await sendCallbackNotification(server, sessionId, "notify", message, { topic }).catch(reportError);
     },
   });
+
+  const rounds = new Map<string, { client: CodexClientLike; stopping: boolean; done?: Promise<CallToolResult> }>();
 
   let closeServicesPromise: Promise<void> | undefined;
   const closeServices = () => {
@@ -101,32 +107,44 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     await closeServices();
   };
 
-  async function runRound(session: SessionRecord, resume: boolean): Promise<CallToolResult> {
-    const round = session.round ?? 1;
-    const client = options.client ?? new CodexMcpClient(config);
+  function runRound(session: SessionRecord, resume: boolean): Promise<CallToolResult> {
+    const client = options.client ?? options.clientFactory?.() ?? new CodexMcpClient(config);
+    const runtime = { client, stopping: false, done: undefined as Promise<CallToolResult> | undefined };
+    rounds.set(session.id, runtime);
     clients.add(client);
+    runtime.done = executeRound(session, resume, runtime);
+    return runtime.done;
+  }
+
+  async function executeRound(session: SessionRecord, resume: boolean, runtime: { client: CodexClientLike; stopping: boolean }): Promise<CallToolResult> {
+    const round = session.round ?? 1;
+    const { client } = runtime;
     const profile = config.tools[session.toolName];
     try {
       if (!profile) throw new Error(`Profile ${session.toolName} is no longer configured.`);
       const effectiveProfile = await prepareProfile(config, { ...profile, model: session.model ?? profile.model }, session.id, round, callbackHub);
+      if (runtime.stopping || closeServicesPromise) throw new Error("Session stopped before Codex started.");
       const result = resume
         ? await client.continueSession(session.codexSessionId!, session.prompt, session.cwd, effectiveProfile)
         : await client.callCodex(effectiveProfile, { prompt: session.prompt, model: session.model, cwd: session.cwd });
+      if (runtime.stopping) return textResult("Session stopped.", true);
       if (result.isError) store.fail(session.id, errorMessageFromResult(result), result, round);
       else store.complete(session.id, result, extractCodexSessionId(result), round);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      store.fail(session.id, message, undefined, round);
+      if (!runtime.stopping) store.fail(session.id, message, undefined, round);
       return textResult(message, true);
     } finally {
       callbackHub.endRound(session.id, round);
       if (!options.client) {
         try { await client.close(); } finally { clients.delete(client); }
       }
+      if (runtime.stopping) store.stop(session.id, round);
+      if (rounds.get(session.id) === runtime) rounds.delete(session.id);
       if (notificationsEnabled && (session.round ?? 1) === round) {
         try {
-          await sendSessionNotification(server, session.id, session.status === "completed" ? "completed" : "failed", session.codexSessionId, session.error);
+          await sendSessionNotification(server, session.id, session.status === "completed" ? "completed" : session.status === "stopped" ? "stopped" : "failed", session.codexSessionId, session.error);
         } catch { /* Transport closure cannot undo durable completion. */ }
       }
     }
@@ -183,11 +201,34 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     if (!session.codexSessionId) return textResult(`Session ${session_id} did not expose a Codex session id.`, true);
 
     try {
-      store.beginRound(session_id, prompt, cwd);
-      return await runRound(session, true);
+      if (rounds.has(session_id)) return textResult(`Session ${session_id} is still settling.`, true);
+      const continued = store.beginRound(session_id, prompt, cwd);
+      return await runRound(continued, true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return textResult(message, true);
+    }
+  });
+
+  server.registerTool("stop-session", {
+    description: "Stop a running or waiting session owned by this MCP server. Waits for its Codex process to exit.",
+    inputSchema: z.object({ session_id: z.string().min(1) }),
+  }, async ({ session_id }) => {
+    const session = store.get(session_id);
+    if (!session) return textResult(`Unknown session: ${session_id}`, true);
+    if (session.status !== "running" && session.status !== "waiting_for_input") return textResult(`Session ${session_id} is ${session.status}; only running or waiting sessions can be stopped.`, true);
+    const runtime = rounds.get(session_id);
+    if (!runtime) return textResult(`Session ${session_id} is owned by another MCP server; stop it through that server.`, true);
+    if (!runtime.client.stop || (options.client && [...rounds.values()].some(other => other !== runtime && other.client === runtime.client))) return textResult("The configured Codex client does not support isolated stopping.", true);
+    if (runtime.stopping) return textResult(`Session ${session_id} is already stopping.`, true);
+    runtime.stopping = true;
+    try {
+      await runtime.client.stop();
+      await runtime.done;
+      return textResult(JSON.stringify({ session_id, status: store.get(session_id)?.status }));
+    } catch (error) {
+      runtime.stopping = false;
+      return textResult(error instanceof Error ? error.message : String(error), true);
     }
   });
 
@@ -242,9 +283,9 @@ async function sendChannelNotification(server: McpServer, content: string, meta:
   });
 }
 
-async function sendSessionNotification(server: McpServer, sessionId: string, status: "completed" | "failed", codexSessionId?: string, error?: string) {
+async function sendSessionNotification(server: McpServer, sessionId: string, status: "completed" | "failed" | "stopped", codexSessionId?: string, error?: string) {
   await server.server.sendLoggingMessage({
-    level: status === "completed" ? "notice" : "error",
+    level: status === "failed" ? "error" : "notice",
     logger: "async-codex-mcp",
     data: { session_id: sessionId, status, codex_session_id: codexSessionId, error },
   });
@@ -252,6 +293,7 @@ async function sendSessionNotification(server: McpServer, sessionId: string, sta
     server,
     status === "completed"
       ? `Async Codex session ${sessionId} completed. Use session-status to read the result or continue-session to resume.`
+      : status === "stopped" ? `Async Codex session ${sessionId} stopped.`
       : `Async Codex session ${sessionId} failed: ${error ?? "unknown error"}`,
     { session_id: sessionId, kind: status, codex_session_id: codexSessionId },
   );

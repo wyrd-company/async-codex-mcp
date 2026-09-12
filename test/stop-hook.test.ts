@@ -86,6 +86,12 @@ describe("evaluateStopHook", () => {
     expect(decision).toBeUndefined();
   });
 
+  it("allows the harness to stop after a session is explicitly stopped", () => {
+    const stopped = stateFile();
+    stopped.sessions[0].status = "stopped";
+    expect(evaluateStopHook([stopped], [], {sessionId:"session-a",ancestors:noAncestors}, watchCommand, alive)).toBeUndefined();
+  });
+
   it("allows stopping when all sessions are settled", () => {
     const settled = stateFile();
     settled.sessions[0].status = "completed";

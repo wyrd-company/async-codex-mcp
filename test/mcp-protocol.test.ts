@@ -111,7 +111,7 @@ describe("dual-era MCP stdio", () => {
     expect(initialized.result.resultType).toBeUndefined();
     expect(initialized.result.capabilities.experimental).toEqual({ "claude/channel": {} });
     input.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-    expect((await request("tools/list")).result.tools.length).toBe(4);
+    expect((await request("tools/list")).result.tools.length).toBe(5);
   });
 
   it("allows a discovery probe followed by legacy initialization", async () => {

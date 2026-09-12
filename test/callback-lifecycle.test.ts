@@ -4,6 +4,7 @@
 //   references: callback-hub
 // ---
 import { build } from "esbuild";
+import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,7 +20,7 @@ beforeAll(async () => {
 });
 afterAll(()=>fs.rmSync(directory,{recursive:true,force:true}));
 describe("callback process lifecycle",()=>{
- it.each(["completed","failed","interrupted"])("exits when its session is %s without closing stdin",async(status)=>{
+ it.each(["completed","failed","interrupted","stopped"])("exits when its session is %s without closing stdin",async(status)=>{
   const store = new SessionStore({persistent:false});
   const session=store.create({toolName:"worker",prompt:"process a sample"});
   const hub=new CallbackHub({ask:async()=>"answer",notify:async()=>{}});
@@ -27,12 +28,17 @@ describe("callback process lifecycle",()=>{
   store.onChange=()=>{if(!["running","waiting_for_input"].includes(session.status))hub.endRound(session.id,1);};
   const child=spawn(process.execPath,[path.join(directory,"callback-cli.js"),"--url",connection.url,"--token",connection.token,"--session-id",session.id,"--round","1"],{stdio:["pipe","pipe","pipe"]});
   const exited=new Promise<number|null>(resolve=>child.once("exit",resolve));
+  const lines=createInterface({input:child.stdout});
+  const ready=new Promise<void>(resolve=>lines.on("line",line=>{if(JSON.parse(line).id===1)resolve();}));
+  child.stdin.write(JSON.stringify({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"test-client",version:"1"}}})+"\n");
   try{
+   await ready;
    if(status==="completed")store.complete(session.id,{content:[]});
    else if(status==="failed")store.fail(session.id,"sample failure");
+   else if(status==="stopped")store.stop(session.id);
    else store.interruptOwned();
    expect(await exited).toBe(0);
-  }finally{child.kill();await hub.close();}
+  }finally{lines.close();child.kill();await hub.close();}
  });
  it("rejects stale round callbacks while a new round is active",async()=>{
   const hub=new CallbackHub({ask:async()=>"answer",notify:async()=>{}});
@@ -42,6 +48,15 @@ describe("callback process lifecycle",()=>{
    expect((await send(1)).status).toBe(409);
    expect((await send(2)).status).toBe(200);
   }finally{await hub.close();}
+ });
+ it("closes a hub while its listen call is still pending and cannot reopen it",async()=>{
+  const hub=new CallbackHub({ask:async()=>"answer",notify:async()=>{}});
+  const starting=hub.ensureStarted();
+  await hub.close();
+  const {url}=await starting;
+  await expect(fetch(url)).rejects.toThrow();
+  await expect(hub.ensureStarted()).rejects.toThrow(/closed/);
+  expect(()=>hub.beginRound("sample-session",1)).toThrow(/closed/);
  });
  it("starts only one hub for concurrent rounds",async()=>{
   const hub=new CallbackHub({ask:async()=>"answer",notify:async()=>{}});

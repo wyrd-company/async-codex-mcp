@@ -132,7 +132,7 @@ An MCP process cannot restore a live promise or callback connection. Records lef
 
 ### Session retention
 
-The server prunes terminal session records during normal startup, reads, and writes. Active records are never pruned. Completed records updated within the protection window remain available for `continue-session`, even when the record cap is exceeded. Defaults are conservative:
+The server prunes terminal session records during startup, session creation, continuation, and terminal transitions. Active records are never pruned. Completed records updated within the protection window remain available for `continue-session`, even when the record cap is exceeded. Defaults are conservative:
 
 ```yaml
 retention:
@@ -248,4 +248,4 @@ Each active round owns an app-server process. A continuation resumes the durable
 
 Call `stop-session` with `session_id` to stop a `running` or `waiting_for_input` session through the MCP server that owns its active round. The tool terminates that round's app-server process and waits for process exit before returning `stopped`. Other sessions keep their own processes. Pending questions are rejected, callbacks close, and `stopped` is terminal for notifications, the Stop hook, and the watcher. Unknown or terminal sessions return an error without changing the record; `answer-session` and `continue-session` reject stopped sessions.
 
-The app-server exposes `turn/interrupt`, which requires a thread and turn ID. Explicit stop uses process termination so it also works during initialization, before those IDs exist. On POSIX systems, the round owns a process group and stop sends `SIGKILL` to that group. On Windows, stop terminates the app-server child process. Stop cannot undo completed side effects or guarantee termination of independently detached or remote work. Custom injected library clients must implement `stop()` with isolated ownership to expose this operation.
+The app-server exposes `turn/interrupt`, which requires a thread and turn ID. Explicit stop uses process termination so it also works during initialization, before those IDs exist. On POSIX systems, the round owns a process group and stop sends `SIGKILL` to that group. On Windows, stop terminates the app-server child process. Stop cannot undo completed side effects or guarantee termination of independently detached or remote work. Custom injected library clients must implement `stop()` with isolated ownership to expose this operation. Normal cleanup sends `SIGTERM` and waits for exit; a custom launcher that ignores that signal can delay cleanup.

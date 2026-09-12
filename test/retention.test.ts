@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import {
   pruneSessionRecords,
@@ -145,6 +145,21 @@ describe("session retention", () => {
     expect(pruneSessionRecords({ directory, now }).removedIds).toEqual([]);
     expect(fs.existsSync(path.join(directory, "malformed.json"))).toBe(true);
     expect(fs.existsSync(path.join(directory, "wrong-name.json"))).toBe(true);
+  });
+
+  it("retains a changed round even when its status and timestamp match the candidate", () => {
+    const file = writeRecord("alpha", "completed", daysAgo(1));
+    writeRecord("beta", "failed", daysAgo(1));
+    const previous = JSON.parse(fs.readFileSync(file, "utf8"));
+    const rename = fs.renameSync.bind(fs);
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation((source, target) => {
+      if (source === file) fs.writeFileSync(file, JSON.stringify({...previous, round: 2}));
+      rename(source, target);
+    });
+    try {
+      expect(pruneSessionRecords({directory, now, policy: policy({maxRecords:1, protectRecentDays:0})}).removedIds).toEqual([]);
+      expect(JSON.parse(fs.readFileSync(file,"utf8")).round).toBe(2);
+    } finally { spy.mockRestore(); }
   });
 
   it("does not remove a concurrent replacement after claiming the inspected file", () => {

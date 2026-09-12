@@ -149,6 +149,9 @@ describe("SessionStore persistence", () => {
       1,
     );
     store.beginRound(session.id, "second");
+    store.complete(session.id, {content:[{type:"text",text:"late first result"}]}, "stale-thread", 1);
+    expect(session.status).toBe("running");
+    expect(session.codexSessionId).toBe("sample-thread");
     store.fail(session.id, "late first failure", undefined, 1);
     expect(session.status).toBe("running");
     expect(session.result).toBeUndefined();
@@ -357,6 +360,66 @@ describe("SessionStore persistence", () => {
 
     expect(session.status).toBe("running");
     expect(session.round).toBe(2);
+  });
+
+  it.each(["completed", "failed", "stopped"])("persists %s while cleanup holds the record lock", (status) => {
+    const store = new SessionStore({ directory });
+    const session = store.create({ toolName: "worker", prompt: "sample" });
+    withRecordFileLock(path.join(directory, `${session.id}.json`), () => {
+      if (status === "completed") store.complete(session.id, { content: [] });
+      else if (status === "failed") store.fail(session.id, "sample failure");
+      else store.stop(session.id);
+      expect(JSON.parse(readRawRecord(session.id)).status).toBe(status);
+    });
+  });
+
+  it("refreshes an external completion while cleanup holds the record lock", () => {
+    const owner = new SessionStore({ directory });
+    const session = owner.create({ toolName: "worker", prompt: "sample" });
+    const observer = new SessionStore({ directory });
+    withRecordFileLock(path.join(directory, `${session.id}.json`), () => {
+      owner.complete(session.id, { content: [] });
+      expect(observer.get(session.id)?.status).toBe("completed");
+    });
+  });
+
+  it.each(["update", "notify"])("rejects terminal %s so it cannot overwrite a resumed round", (operation) => {
+    const first = new SessionStore({ directory });
+    const session = first.create({ toolName: "worker", prompt: "sample" });
+    first.complete(session.id, {content:[]}, "sample-thread");
+    const second = new SessionStore({ directory });
+    const read = fs.readFileSync.bind(fs);
+    let interleaved = false;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: any) => {
+      const result = read(file, options);
+      if (file === path.join(directory, `${session.id}.json`) && !interleaved) {
+        interleaved = true;
+        second.beginRound(session.id, "second");
+      }
+      return result;
+    }) as typeof fs.readFileSync);
+    try {
+      expect(() => operation === "update" ? first.update(session.id, {prompt:"late"}) : first.notify(session.id, {message:"late"})).toThrow(/completed/);
+    } finally { spy.mockRestore(); }
+    if (!interleaved) second.beginRound(session.id, "second");
+    expect(JSON.parse(readRawRecord(session.id))).toMatchObject({round:2,status:"running",prompt:"second"});
+  });
+
+  it("keeps retention scans off callbacks and status reads", async () => {
+    const store = new SessionStore({ directory });
+    const session = store.create({ toolName: "worker", prompt: "sample" });
+    const observer = new SessionStore({ directory });
+    const scan = vi.spyOn(fs, "readdirSync");
+    try {
+      store.notify(session.id, {message:"progress"});
+      const question = store.ask(session.id, {message:"Which sample?"});
+      store.answer(session.id, "sample");
+      await question.response;
+      observer.get(session.id);
+      expect(scan.mock.calls.filter(([file]) => file === directory)).toHaveLength(0);
+      store.complete(session.id, {content:[]});
+      expect(scan.mock.calls.filter(([file]) => file === directory).length).toBeGreaterThan(0);
+    } finally { scan.mockRestore(); }
   });
 
   it("rejects a stale round write without replacing the newer record", () => {

@@ -393,11 +393,7 @@ function sameRecordVersion(
   current: RetentionRecord,
   inspected: RetentionRecord,
 ): boolean {
-  return (
-    current.id === inspected.id &&
-    current.status === inspected.status &&
-    current.updatedAt === inspected.updatedAt
-  );
+  return JSON.stringify(current) === JSON.stringify(inspected);
 }
 
 function claimPath(file: string): string {

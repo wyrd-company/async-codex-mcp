@@ -128,13 +128,13 @@ export class SessionStore {
     this.sessions.set(session.id, session);
     this.claimOwnership(session);
     this.changed(session);
+    if (this.persistent) this.prune();
     return session;
   }
 
   get(id: string): SessionRecord | undefined {
     if (!isSafeRecordId(id)) return undefined;
     if (this.persistent) {
-      this.prune();
       this.refreshExternal(id);
     }
     return this.sessions.get(id);
@@ -214,14 +214,8 @@ export class SessionStore {
     if (!session) {
       throw new Error(`Unknown session: ${id}`);
     }
-    if (
-      TERMINAL_STATUSES.has(session.status) &&
-      patch.status &&
-      patch.status !== session.status
-    ) {
-      throw new Error(
-        `Session ${id} is ${session.status}; terminal sessions cannot transition to ${patch.status}.`,
-      );
+    if (TERMINAL_STATUSES.has(session.status)) {
+      throw new Error(`Session ${id} is ${session.status}; terminal records are immutable outside continuation.`);
     }
     Object.assign(session, patch, { updatedAt: new Date().toISOString() });
     this.changed(session);
@@ -300,6 +294,9 @@ export class SessionStore {
     input: { message: string; topic?: string },
   ): SessionMessage {
     const session = this.require(sessionId);
+    if (TERMINAL_STATUSES.has(session.status)) {
+      throw new Error(`Session ${sessionId} is ${session.status}; it cannot send another notification.`);
+    }
     const now = new Date().toISOString();
     const message: SessionMessage = {
       id: crypto.randomUUID(),
@@ -412,36 +409,24 @@ export class SessionStore {
   private changed(session: SessionRecord): void {
     if (this.persistent) this.persist(session);
     this.onChange?.(this);
-    if (this.persistent) this.prune();
+    if (this.persistent && TERMINAL_STATUSES.has(session.status)) this.prune();
   }
 
   private persist(session: SessionRecord): void {
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const file = this.recordPath(session.id);
-    const locked = withRecordFileLock(file, () => {
-      if (!fs.existsSync(file)) {
-        this.persistUnlocked(session);
-        return undefined;
-      }
-      const protectedRecord = withProtectedRecordFile(file, (protectedFile) =>
-        this.readRecord(protectedFile),
-      );
-      if (!protectedRecord.protected) return undefined;
-      const current = protectedRecord.value;
-      if (current && !this.canOverwrite(current, session)) return current;
-      this.persistUnlocked(session);
-      return undefined;
-    });
-    if (!locked.acquired) {
-      throw new Error(`Session ${session.id} is busy; retry the operation.`);
-    }
-    if (locked.value) {
-      synchronizeRecord(session, locked.value);
+    // Only the active round owner writes transitions. Publishing completion is
+    // what permits a new owner to resume; observers and cleanup must not block
+    // this publication. Atomic rename also preserves writes during quarantine.
+    const current = this.readRecord(file);
+    if (current && !this.canOverwrite(current, session)) {
+      synchronizeRecord(session, current);
       this.reconcileOwnership(session);
       throw new Error(
         `Session ${session.id} changed in another server; retry the operation.`,
       );
     }
+    this.persistUnlocked(session);
   }
 
   private persistUnlocked(session: SessionRecord): void {
@@ -489,20 +474,20 @@ export class SessionStore {
       return;
     }
     const file = this.recordPath(id);
-    const locked = withRecordFileLock(file, () =>
-      withProtectedRecordFile(file, (protectedFile) =>
-        this.readRecord(protectedFile),
-      ),
-    );
-    if (!locked.acquired) return;
-    if (!locked.value.protected) {
-      if (!fs.existsSync(file)) {
-        this.sessions.delete(id);
-        this.ownedRounds.delete(id);
+    // Atomic reads retain their opened inode through rename. Recovery is only
+    // needed on a missing/unreadable path, not for each status request.
+    let current = this.readRecord(file);
+    if (!current) {
+      const protectedRecord = withProtectedRecordFile(file, (protectedFile) => this.readRecord(protectedFile));
+      if (!protectedRecord.protected) {
+        if (!fs.existsSync(file)) {
+          this.sessions.delete(id);
+          this.ownedRounds.delete(id);
+        }
+        return;
       }
-      return;
+      current = protectedRecord.value;
     }
-    const current = locked.value.value;
     if (current?.id === id) {
       const cachedRecord = this.sessions.get(id);
       this.sessions.set(

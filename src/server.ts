@@ -28,7 +28,6 @@ const answerShape = {
 
 export type CreateServerOptions = {
   client?: CodexClientLike;
-  clientFactory?: () => CodexClientLike;
   store?: SessionStore;
   protocolEra?: ProtocolEra;
 };
@@ -108,7 +107,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   };
 
   function runRound(session: SessionRecord, resume: boolean): Promise<CallToolResult> {
-    const client = options.client ?? options.clientFactory?.() ?? new CodexMcpClient(config);
+    const client = options.client ?? new CodexMcpClient(config);
     const runtime = { client, stopping: false, done: undefined as Promise<CallToolResult> | undefined };
     rounds.set(session.id, runtime);
     clients.add(client);

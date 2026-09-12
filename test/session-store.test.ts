@@ -92,6 +92,18 @@ describe("SessionStore persistence", () => {
     expect(fs.statSync(path.join(directory, entries[0])).mode & 0o777).toBe(0o600);
   });
 
+  it("persists round identity and rejects late finalizers from earlier rounds", () => {
+    const store = new SessionStore({directory});
+    const session = store.create({toolName:"worker",prompt:"first"});
+    store.complete(session.id,{content:[{type:"text",text:"first"}]},"sample-thread",1);
+    store.beginRound(session.id,"second");
+    store.fail(session.id,"late first failure",undefined,1);
+    expect(session.status).toBe("running");
+    expect(session.result).toBeUndefined();
+    store.complete(session.id,{content:[{type:"text",text:"second"}]},undefined,2);
+    expect(new SessionStore({directory}).get(session.id)).toMatchObject({round:2,status:"completed",codexSessionId:"sample-thread",result:{content:[{type:"text",text:"second"}]}});
+  });
+
   it("keeps terminal status when a stale finalizer arrives", () => {
     const store = new SessionStore({ directory });
     const session = store.create({ toolName: "codex", prompt: "perform a task" });

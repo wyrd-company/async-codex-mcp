@@ -28,6 +28,7 @@ export type SessionRecord = {
   createdAt: string;
   updatedAt: string;
   codexSessionId?: string;
+  round?: number;
   result?: CallToolResult;
   error?: string;
   messages: SessionMessage[];
@@ -90,6 +91,7 @@ export class SessionStore {
       ...input,
       id: crypto.randomUUID(),
       status: "running",
+      round: 1,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -104,6 +106,26 @@ export class SessionStore {
 
   get(id: string): SessionRecord | undefined {
     return this.sessions.get(id);
+  }
+
+  beginRound(id: string, prompt: string, cwd?: string): SessionRecord {
+    const session = this.require(id);
+    if (session.status !== "completed") throw new Error(`Session ${id} is ${session.status}; only completed sessions can be continued.`);
+    if (!session.codexSessionId) throw new Error(`Session ${id} did not expose a Codex session id.`);
+    session.round = (session.round ?? 1) + 1;
+    session.prompt = prompt;
+    session.cwd = cwd ?? session.cwd;
+    session.status = "running";
+    session.result = undefined;
+    session.error = undefined;
+    session.messages = [];
+    session.pendingAskId = undefined;
+    session.ownerPid = process.pid;
+    session.ownerStartToken = processStartToken(process.pid);
+    session.updatedAt = new Date().toISOString();
+    this.ownedSessionIds.add(id);
+    this.changed(session);
+    return session;
   }
 
   ownedSessions(): SessionRecord[] {
@@ -154,24 +176,25 @@ export class SessionStore {
     id: string,
     result: CallToolResult,
     codexSessionId?: string,
+    round?: number,
   ): SessionRecord {
     const session = this.require(id);
-    if (TERMINAL_STATUSES.has(session.status)) return session;
+    if ((round !== undefined && round !== (session.round ?? 1)) || TERMINAL_STATUSES.has(session.status)) return session;
     this.rejectPendingAsk(
       session,
       `Session ${id} completed before the pending question was answered.`,
     );
     session.status = "completed";
     session.result = result;
-    session.codexSessionId = codexSessionId;
+    session.codexSessionId = codexSessionId ?? session.codexSessionId;
     session.updatedAt = new Date().toISOString();
     this.changed(session);
     return session;
   }
 
-  fail(id: string, error: string, result?: CallToolResult): SessionRecord {
+  fail(id: string, error: string, result?: CallToolResult, round?: number): SessionRecord {
     const session = this.require(id);
-    if (TERMINAL_STATUSES.has(session.status)) return session;
+    if ((round !== undefined && round !== (session.round ?? 1)) || TERMINAL_STATUSES.has(session.status)) return session;
     this.rejectPendingAsk(
       session,
       `Session ${id} failed before the pending question was answered: ${error}`,

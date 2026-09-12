@@ -12,7 +12,7 @@ import type { AsyncCodexConfig, ToolProfile } from "./config.js";
 export type CodexToolArguments = { prompt: string; model?: string; cwd?: string };
 export type CodexClientLike = {
   callCodex(profile: ToolProfile, args: CodexToolArguments): Promise<CallToolResult>;
-  continueSession(sessionId: string, prompt: string, cwd?: string): Promise<CallToolResult>;
+  continueSession(sessionId: string, prompt: string, cwd?: string, profile?: ToolProfile): Promise<CallToolResult>;
   close(): Promise<void>;
 };
 
@@ -42,9 +42,11 @@ export class CodexAppServerClient implements CodexClientLike {
     return connection.runTurn(result.thread.id, args.prompt);
   }
 
-  async continueSession(sessionId: string, prompt: string, cwd?: string): Promise<CallToolResult> {
+  async continueSession(sessionId: string, prompt: string, cwd?: string, profile?: ToolProfile): Promise<CallToolResult> {
     const connection = await this.getConnection();
-    await connection.request("thread/resume", { threadId: sessionId, cwd });
+    await connection.request("thread/resume", { threadId: sessionId, cwd,
+      ...(profile ? { model: profile.model, sandbox: profile.sandboxMode, approvalPolicy: profile.approvalPolicy, baseInstructions: profile.baseInstructions, developerInstructions: profile.developerInstructions, config: { ...profile.config, ...(profile.compactPrompt ? { compact_prompt: profile.compactPrompt } : {}) } } : {}),
+    });
     return connection.runTurn(sessionId, prompt, cwd);
   }
 

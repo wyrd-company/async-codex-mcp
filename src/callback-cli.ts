@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import http from "node:http";
 import { z } from "zod";
 
 const options = parseArgs(process.argv.slice(2));
@@ -41,20 +42,39 @@ const handle = serveStdio(() => {
 
   return server;
 });
-process.stdin.once("end", () => { void handle.close(); });
+const lifetime = http.request(`${options.url}/lifecycle`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+}, (response) => {
+  response.resume();
+  response.once("end", shutdown);
+  response.once("error", shutdown);
+});
+lifetime.once("error", shutdown);
+lifetime.end(JSON.stringify({ session_id: options.sessionId, round: options.round }));
+process.stdin.once("end", shutdown);
+
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  lifetime.destroy();
+  void handle.close().finally(() => process.exit(0));
+}
 
 function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
-async function postCallback<T = unknown>(path: "/ask" | "/notify", body: Record<string, unknown>): Promise<T> {
+async function postCallback<T = unknown>(path: "/ask" | "/notify" | "/lifecycle", body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${options.url}${path}`, {
     method: "POST",
+    signal,
     headers: {
       authorization: `Bearer ${options.token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ ...body, session_id: options.sessionId }),
+    body: JSON.stringify({ ...body, session_id: options.sessionId, round: options.round }),
   });
 
   const json = (await response.json()) as { error?: string };
@@ -64,7 +84,7 @@ async function postCallback<T = unknown>(path: "/ask" | "/notify", body: Record<
   return json as T;
 }
 
-function parseArgs(args: string[]): { url: string; token: string; sessionId: string } {
+function parseArgs(args: string[]): { url: string; token: string; sessionId: string; round: number } {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index];
@@ -78,9 +98,10 @@ function parseArgs(args: string[]): { url: string; token: string; sessionId: str
   const url = values.get("url");
   const token = values.get("token");
   const sessionId = values.get("session-id");
-  if (!url || !token || !sessionId) {
-    throw new Error("--url, --token, and --session-id are required.");
+  const round = Number(values.get("round"));
+  if (!url || !token || !sessionId || !Number.isInteger(round) || round < 1) {
+    throw new Error("--url, --token, --session-id, and --round are required.");
   }
 
-  return { url, token, sessionId };
+  return { url, token, sessionId, round };
 }

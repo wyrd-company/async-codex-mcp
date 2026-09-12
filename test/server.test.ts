@@ -85,7 +85,7 @@ describe("async-codex-mcp server", () => {
     const startedPayload = JSON.parse(textOf(started));
 
     expect(startedPayload.status).toBe("running");
-    expect(fake.calls).toHaveLength(1);
+    await expect.poll(() => fake.calls.length).toBe(1);
     expect(fake.calls[0].profile.sandboxMode).toBe("danger-full-access");
     expect(fake.calls[0].profile.approvalPolicy).toBe("never");
     expect(Object.keys(fake.calls[0].profile.config.mcp_servers as Record<string, unknown>)).toContain("async_codex_mcp_callback");
@@ -104,6 +104,9 @@ describe("async-codex-mcp server", () => {
 
     const continued = await client.callTool("continue-session", { session_id: startedPayload.session_id, prompt: "next" });
     expect(textOf(continued)).toBe("continued codex-123: next");
+    const latest = JSON.parse(textOf(await client.callTool("session-status", { session_id: startedPayload.session_id })));
+    expect(latest).toMatchObject({ round: 2, status: "completed" });
+    expect(textOf(latest.result)).toBe("continued codex-123: next");
     expect(fake.continueCalls).toEqual([{ sessionId: "codex-123", prompt: "next", cwd: "/tmp/project" }]);
   });
 
@@ -181,19 +184,20 @@ describe("async-codex-mcp server", () => {
 
     const started = await client.callTool("codex-write", { prompt: "needs callbacks" });
     const { session_id } = JSON.parse(textOf(started));
+    await expect.poll(() => fake.calls.length).toBe(1);
     const callback = callbackConnection(fake.calls[0].profile);
 
     const notify = await fetch(`${callback.url}/notify`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ session_id, message: "halfway done", topic: "progress" }),
+      body: JSON.stringify({ session_id, round: 1, message: "halfway done", topic: "progress" }),
     });
     expect(notify.ok).toBe(true);
 
     const askPromise = fetch(`${callback.url}/ask`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ session_id, message: "Which target?", context: "Found staging and production." }),
+      body: JSON.stringify({ session_id, round: 1, message: "Which target?", context: "Found staging and production." }),
     });
 
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -219,11 +223,12 @@ describe("async-codex-mcp server", () => {
     const client = await connect(server.server as never);
     const started = await client.callTool("codex-write", { prompt: "may ask" });
     const { session_id } = JSON.parse(textOf(started));
+    await expect.poll(() => fake.calls.length).toBe(1);
     const callback = callbackConnection(fake.calls[0].profile);
     const askPromise = fetch(`${callback.url}/ask`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ session_id, message: "Which target?" }),
+      body: JSON.stringify({ session_id, round: 1, message: "Which target?" }),
     });
     await new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -280,18 +285,19 @@ describe("async-codex-mcp server", () => {
 
     const started = await client.callTool("codex-write", { prompt: "channel events" });
     const { session_id } = JSON.parse(textOf(started));
+    await expect.poll(() => fake.calls.length).toBe(1);
     const callback = callbackConnection(fake.calls[0].profile);
 
     await fetch(`${callback.url}/notify`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ session_id, message: "halfway done", topic: "progress" }),
+      body: JSON.stringify({ session_id, round: 1, message: "halfway done", topic: "progress" }),
     });
 
     const askPromise = fetch(`${callback.url}/ask`, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ session_id, message: "Which target?", context: "Found staging and production." }),
+      body: JSON.stringify({ session_id, round: 1, message: "Which target?", context: "Found staging and production." }),
     });
     await new Promise((resolve) => setTimeout(resolve, 5));
     await client.callTool("answer-session", { session_id, message: "Use staging." });

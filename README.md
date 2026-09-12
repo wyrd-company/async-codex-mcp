@@ -128,7 +128,24 @@ The wrapper writes one atomic JSON record per async session under `${XDG_STATE_H
 
 Completed and failed records load when a new MCP server starts. A completed record retains the native Codex thread ID, so the original async `session_id` continues to work with `session-status` and `continue-session` after Claude, the MCP server, or the device restarts.
 
-An MCP process cannot restore a live promise or callback connection. Records left as `running` or `waiting_for_input` are therefore recovered as `interrupted`; they never appear to the Stop hook or watcher as live work. Durable records contain the session prompt, result, callback messages, and working-directory metadata needed by `session-status`, but never callback bearer tokens or provider credentials. They are retained until the user removes the session directory.
+An MCP process cannot restore a live promise or callback connection. Records left as `running` or `waiting_for_input` are therefore recovered as `interrupted`; they never appear to the Stop hook or watcher as live work. Durable records contain the session prompt, result, callback messages, and working-directory metadata needed by `session-status`, but never callback bearer tokens or provider credentials.
+
+### Session retention
+
+The server prunes terminal session records during normal startup, reads, and writes. Active records are never pruned. Completed records updated within the protection window remain available for `continue-session`, even when the record cap is exceeded. Defaults are conservative:
+
+```yaml
+retention:
+  maxAgeDays: 365
+  maxRecords: 10000
+  protectRecentDays: 90
+```
+
+`maxAgeDays` removes older completed, failed, interrupted, and stopped records. `maxRecords` removes the oldest unprotected terminal records when the retained terminal record count exceeds the cap. Set either value to `0` for unlimited retention by that rule. Set `protectRecentDays` to `0` to disable the completed-session protection window.
+
+Cleanup is best effort. Malformed or unreadable records remain untouched, and a record changed by another server during cleanup is retained for a later pass. Temporary server and watcher snapshots are also reaped when their recorded PID is dead or its process start identity no longer matches.
+
+For manual cleanup, remove selected session JSON files from `${ASYNC_CODEX_MCP_SESSION_DIR}` or `${XDG_STATE_HOME:-$HOME/.local/state}/async-codex-mcp/sessions/`. Remove temporary snapshots from `${ASYNC_CODEX_MCP_STATE_DIR}` or the `async-codex-mcp-state` directory under the operating system temporary directory. Keep records whose sessions are active in another MCP server.
 
 If a session is waiting for input, answer it with:
 
@@ -220,3 +237,9 @@ npm run build
 ```
 
 The test suite uses ThoughtSpot's `mcp-testing-kit` transport approach to exercise the MCP server directly and validates a `gpt-5.4-mini` model override without making network calls.
+
+## Continuation rounds and callback lifetime
+
+A session retains its wrapper ID and native Codex thread ID across continuations. `round` starts at 1 and increases for each continuation. `session-status` reports the current round; a running continuation clears the previous result, then stores its new result or failure. Continuation remains a blocking MCP call. Channels and the watcher also observe its running, waiting, and terminal transitions.
+
+Each active round owns an app-server process. A continuation resumes the durable native thread in a fresh process with current callback configuration. This avoids the app-server behavior that ignores configuration overrides on already-loaded threads. Callback processes receive a round-scoped lifecycle response when the round ends and exit even if their stdin remains open. Delayed callbacks from an earlier round cannot change the current round.

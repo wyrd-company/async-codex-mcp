@@ -3,6 +3,7 @@ import type { Socket } from "node:net";
 
 type CallbackHubRequest = {
   session_id: string;
+  round: number;
   message: string;
   context?: string;
   topic?: string;
@@ -21,12 +22,29 @@ export type CallbackHubConnection = {
 export class CallbackHub {
   private server?: http.Server;
   private connection?: CallbackHubConnection;
+  private starting?: Promise<CallbackHubConnection>;
+  private readonly rounds = new Map<string, Set<http.ServerResponse>>();
   private readonly token = crypto.randomUUID();
   private readonly sockets = new Set<Socket>();
 
   constructor(private readonly handlers: CallbackHubHandlers) {}
 
-  async ensureStarted(): Promise<CallbackHubConnection> {
+  ensureStarted(): Promise<CallbackHubConnection> {
+    return this.starting ??= this.start().catch((error) => { this.starting = undefined; throw error; });
+  }
+
+  beginRound(sessionId: string, round: number): void {
+    this.rounds.set(`${sessionId}:${round}`, new Set());
+  }
+
+  endRound(sessionId: string, round: number): void {
+    const key = `${sessionId}:${round}`;
+    const listeners = this.rounds.get(key);
+    this.rounds.delete(key);
+    for (const response of listeners ?? []) this.writeJson(response, 200, { terminal: true });
+  }
+
+  private async start(): Promise<CallbackHubConnection> {
     if (this.connection) return this.connection;
 
     this.server = http.createServer((request, response) => {
@@ -59,6 +77,9 @@ export class CallbackHub {
     const server = this.server;
     this.server = undefined;
     this.connection = undefined;
+    this.starting = undefined;
+    for (const listeners of this.rounds.values()) for (const response of listeners) this.writeJson(response, 200, { terminal: true });
+    this.rounds.clear();
     for (const socket of this.sockets) {
       socket.destroy();
     }
@@ -81,6 +102,19 @@ export class CallbackHub {
       }
 
       const body = await readJson(request);
+      const identity = body as Partial<CallbackHubRequest> | null;
+      if (!identity || typeof identity.session_id !== "string" || !Number.isInteger(identity.round)) {
+        this.writeJson(response, 400, { error: "session_id and round are required." });
+        return;
+      }
+      const listeners = this.rounds.get(`${identity.session_id}:${identity.round}`);
+      if (request.url === "/lifecycle") {
+        if (!listeners) { this.writeJson(response, 200, { terminal: true }); return; }
+        listeners.add(response);
+        response.once("close", () => listeners.delete(response));
+        return;
+      }
+      if (!listeners) { this.writeJson(response, 409, { error: "Session round is no longer active." }); return; }
       const parsed = parseCallbackRequest(body);
       if (!parsed.ok) {
         this.writeJson(response, 400, { error: parsed.error });
@@ -152,6 +186,7 @@ function parseCallbackRequest(body: unknown): { ok: true; value: CallbackHubRequ
     ok: true,
     value: {
       session_id: value.session_id,
+      round: value.round as number,
       message: value.message,
       context: value.context,
       topic: value.topic,

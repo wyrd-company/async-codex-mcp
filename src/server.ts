@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CallbackHub } from "./callback-hub.js";
 import { CodexMcpClient, type CodexClientLike } from "./codex-client.js";
 import type { AsyncCodexConfig, ToolProfile } from "./config.js";
-import { SessionStore } from "./session-store.js";
+import { SessionStore, type SessionRecord } from "./session-store.js";
 import { removeStateFile, writeStateFile } from "./state-file.js";
 
 const runShape = {
@@ -49,7 +49,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     },
   );
   const notificationsEnabled = options.protocolEra !== "modern";
-  const client = options.client ?? new CodexMcpClient(config);
+  const clients = new Set<CodexClientLike>();
+  if (options.client) clients.add(options.client);
   const store = options.store ?? new SessionStore();
   store.onChange = (current) => {
     try {
@@ -73,7 +74,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   let closeServicesPromise: Promise<void> | undefined;
   const closeServices = () => {
     store.interruptOwned();
-    closeServicesPromise ??= Promise.all([client.close(), callbackHub.close()]).then(() => {
+    closeServicesPromise ??= Promise.all([...clients].map((client) => client.close()).concat(callbackHub.close())).then(() => {
       try {
         removeStateFile();
       } catch {
@@ -100,47 +101,48 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     await closeServices();
   };
 
+  async function runRound(session: SessionRecord, resume: boolean): Promise<CallToolResult> {
+    const round = session.round ?? 1;
+    const client = options.client ?? new CodexMcpClient(config);
+    clients.add(client);
+    const profile = config.tools[session.toolName];
+    try {
+      if (!profile) throw new Error(`Profile ${session.toolName} is no longer configured.`);
+      const effectiveProfile = await prepareProfile(config, { ...profile, model: session.model ?? profile.model }, session.id, round, callbackHub);
+      const result = resume
+        ? await client.continueSession(session.codexSessionId!, session.prompt, session.cwd, effectiveProfile)
+        : await client.callCodex(effectiveProfile, { prompt: session.prompt, model: session.model, cwd: session.cwd });
+      if (result.isError) store.fail(session.id, errorMessageFromResult(result), result, round);
+      else store.complete(session.id, result, extractCodexSessionId(result), round);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      store.fail(session.id, message, undefined, round);
+      return textResult(message, true);
+    } finally {
+      callbackHub.endRound(session.id, round);
+      if (!options.client) {
+        try { await client.close(); } finally { clients.delete(client); }
+      }
+      if (notificationsEnabled && (session.round ?? 1) === round) {
+        try {
+          await sendSessionNotification(server, session.id, session.status === "completed" ? "completed" : "failed", session.codexSessionId, session.error);
+        } catch { /* Transport closure cannot undo durable completion. */ }
+      }
+    }
+  }
+
   for (const [name, profile] of Object.entries(config.tools)) {
-    server.registerTool(
-      name,
-      { description: profile.description ?? `Start an asynchronous Codex session using the ${name} profile.`, inputSchema: z.object(runShape) },
-      async ({ prompt, model, cwd }) => {
-        const session = store.create({ toolName: name, prompt, model, cwd });
-        const effectiveProfile = await prepareProfile(config, profile, session.id, callbackHub);
-
-        void client
-          .callCodex(effectiveProfile, { prompt, model, cwd })
-          .then(async (result) => {
-            if (result.isError) {
-              const message = errorMessageFromResult(result);
-              store.fail(session.id, message, result);
-              if (notificationsEnabled) await sendSessionNotification(server, session.id, "failed", undefined, message);
-              return;
-            }
-
-            const codexSessionId = extractCodexSessionId(result);
-            store.complete(session.id, result, codexSessionId);
-            if (notificationsEnabled) await sendSessionNotification(server, session.id, "completed", codexSessionId);
-          })
-          .catch(async (error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error);
-            store.fail(session.id, message);
-            if (notificationsEnabled) await sendSessionNotification(server, session.id, "failed", undefined, message);
-          });
-
-        return textResult(
-          JSON.stringify(
-            {
-              session_id: session.id,
-              status: session.status,
-              message: "Codex session started. Watch notifications/message for completion.",
-            },
-            null,
-            2,
-          ),
-        );
-      },
-    );
+    server.registerTool(name, {
+      description: profile.description ?? `Start an asynchronous Codex session using the ${name} profile.`, inputSchema: z.object(runShape),
+    }, async ({ prompt, model, cwd }) => {
+      const session = store.create({ toolName: name, prompt, model, cwd });
+      void runRound(session, false).catch((error: unknown) => {
+        // Persistence errors are reported without escaping a background promise.
+        try { server.server.onerror?.(error instanceof Error ? error : new Error(String(error))); } catch { /* observer */ }
+      });
+      return textResult(JSON.stringify({ session_id: session.id, round: session.round, status: session.status, message: "Codex session started. Use session-status or the watcher for completion." }));
+    });
   }
 
   server.registerTool(
@@ -158,6 +160,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
             id: session.id,
             toolName: session.toolName,
             status: session.status,
+            round: session.round ?? 1,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             codexSessionId: session.codexSessionId,
@@ -180,8 +183,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     if (!session.codexSessionId) return textResult(`Session ${session_id} did not expose a Codex session id.`, true);
 
     try {
-      const result = await client.continueSession(session.codexSessionId, prompt, cwd ?? session.cwd);
-      return result;
+      store.beginRound(session_id, prompt, cwd);
+      return await runRound(session, true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return textResult(message, true);
@@ -273,12 +276,13 @@ async function sendCallbackNotification(
   );
 }
 
-async function prepareProfile(config: AsyncCodexConfig, profile: ToolProfile, sessionId: string, callbackHub: CallbackHub): Promise<ToolProfile> {
+async function prepareProfile(config: AsyncCodexConfig, profile: ToolProfile, sessionId: string, round: number, callbackHub: CallbackHub): Promise<ToolProfile> {
   if (!callbacksEnabled(config, profile)) {
     return profile;
   }
 
   const connection = await callbackHub.ensureStarted();
+  callbackHub.beginRound(sessionId, round);
   return {
     ...profile,
     developerInstructions: appendCallbackInstructions(profile.developerInstructions),
@@ -296,6 +300,8 @@ async function prepareProfile(config: AsyncCodexConfig, profile: ToolProfile, se
             connection.token,
             "--session-id",
             sessionId,
+            "--round",
+            String(round),
           ],
           // Codex aborts blocked ask_user calls at its default MCP tool
           // timeout (60s); a human answer routinely takes longer.

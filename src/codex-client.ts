@@ -2,7 +2,9 @@
 // relationships:
 //   references: config
 // ---
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import { createInterface } from "node:readline";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AsyncCodexConfig, ToolProfile } from "./config.js";
@@ -15,7 +17,7 @@ export type CodexClientLike = {
 };
 
 type Pending = { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout };
-type Turn = { resolve(value: CallToolResult): void; reject(error: Error): void; messages: Map<string, string>; timer: NodeJS.Timeout };
+type Turn = { id?: string; expired?: boolean; interruptRequested?: boolean; resolve(value: CallToolResult): void; reject(error: Error): void; messages: Map<string, string>; timer: NodeJS.Timeout };
 
 /** Adapts Codex's app-server JSONL API to the wrapper's durable result contract. */
 export class CodexAppServerClient implements CodexClientLike {
@@ -71,7 +73,7 @@ export class CodexAppServerClient implements CodexClientLike {
 export { CodexAppServerClient as CodexMcpClient };
 
 class AppServerConnection {
-  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly child: ChildProcessByStdio<Writable, Readable, null>;
   private readonly pending = new Map<number, Pending>();
   private readonly turns = new Map<string, Turn>();
   private nextId = 0;
@@ -82,11 +84,9 @@ class AppServerConnection {
     // Translate the old explicit default as well as accepting custom launchers.
     const args = config.codex.args.map((arg) => arg === "mcp-server" ? "app-server" : arg);
     this.child = spawn(config.codex.command, args, {
-      env: { ...process.env, ...config.codex.env }, cwd: config.codex.cwd, stdio: "pipe",
+      env: { ...process.env, ...config.codex.env }, cwd: config.codex.cwd, stdio: ["pipe", "pipe", "inherit"],
     });
     this.exited = new Promise((resolve) => this.child.once("close", resolve));
-    // Drain stderr without retaining or returning potential credentials from CLI logs.
-    this.child.stderr.resume();
     this.child.on("error", (error) => this.fail(new Error(`Cannot start Codex app-server: ${error.message}. Configure codex.command and codex.args for a CLI with app-server support.`)));
     this.child.on("close", (code, signal) => this.fail(new Error(`Codex app-server exited (code ${code}, signal ${signal}). This integration requires the app-server interface; verify codex.command and codex.args (tested with Codex 0.153.4 and 0.154.0).`)));
     this.child.stdin.on("error", (error) => this.fail(new Error(`Codex app-server input failed: ${error.message}`)));
@@ -100,21 +100,21 @@ class AppServerConnection {
 
   async initialize(): Promise<void> {
     try {
-      await this.request("initialize", { clientInfo: { name: "async_codex_mcp", version: "0.6.0" } });
+      await this.request("initialize", { clientInfo: { name: "async_codex_mcp", version: "0.6.0" } }, DEFAULT_REQUEST_TIMEOUT_MSEC);
       this.send({ method: "initialized", params: {} });
     } catch (error) {
       throw new Error(`Codex app-server initialization failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  request(method: string, params: unknown): Promise<any> {
+  request(method: string, params: unknown, timeoutMs = this.config.codex.requestTimeoutSec * 1000): Promise<any> {
     if (this.failure) return Promise.reject(this.failure);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Codex app-server ${method} exceeded codex.requestTimeoutSec.`));
-      }, this.config.codex.requestTimeoutSec * 1000);
+        reject(new Error(`Codex app-server ${method} exceeded its ${timeoutMs / 1000}s wait limit.`));
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.send({ id, method, params });
     });
@@ -126,16 +126,28 @@ class AppServerConnection {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.turns.delete(threadId);
+        activeTurn.expired = true;
+        this.interrupt(threadId, activeTurn);
         reject(new Error("Codex app-server turn exceeded codex.requestTimeoutSec."));
       }, this.config.codex.requestTimeoutSec * 1000);
       // Subscribe before turn/start: completion may arrive before its response.
-      const activeTurn = { resolve, reject, timer, messages: new Map<string, string>() };
+      const activeTurn: Turn = { resolve, reject, timer, messages: new Map<string, string>() };
       this.turns.set(threadId, activeTurn);
-      void this.request("turn/start", { threadId, input: [{ type: "text", text: prompt }], cwd }).catch((error) => {
+      void this.request("turn/start", { threadId, input: [{ type: "text", text: prompt, text_elements: [] }], cwd }).then((result) => {
+        activeTurn.id = result?.turn?.id;
+        if (activeTurn.expired) this.interrupt(threadId, activeTurn);
+      }).catch((error) => {
         const turn = this.turns.get(threadId);
         if (turn === activeTurn) { clearTimeout(turn.timer); this.turns.delete(threadId); turn.reject(error); }
       });
     });
+  }
+
+  private interrupt(threadId: string, turn: Turn): void {
+    if (turn.id && !turn.interruptRequested) {
+      turn.interruptRequested = true;
+      void this.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
+    }
   }
 
   private receive(message: any): void {
@@ -157,6 +169,7 @@ class AppServerConnection {
     const params = message.params;
     const turn = this.turns.get(params?.threadId);
     if (!turn) return;
+    turn.id ??= params.turnId ?? params.turn?.id;
     turn.timer.refresh();
     if (message.method === "item/completed" && params.item?.type === "agentMessage") {
       turn.messages.set(params.item.id, params.item.text);

@@ -38,7 +38,7 @@ Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`
 
 Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also settable per tool under `tools.<name>.callbacks`) is passed to Codex as the callback MCP server's `tool_timeout_sec` — the ceiling on how long a blocking `async_codex_ask_user` call can wait for an answer. Without it, Codex aborts blocked asks at its default 60-second tool timeout and the session fails.
 
-`codex.requestTimeoutSec` (default 86400) sets the app-server request and turn wait limit. Turn notifications reset the turn wait limit.
+`codex.requestTimeoutSec` (default 86400) sets the app-server request and turn wait limit. Turn notifications reset the turn wait limit; expiry requests a turn interruption. Initialization retains the previous 60-second SDK connection limit. Codex diagnostics go to stderr, separate from tool results.
 
 Example:
 

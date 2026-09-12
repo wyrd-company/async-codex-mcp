@@ -3,6 +3,7 @@
 //   references: codex-client
 // ---
 import readline from 'node:readline';
+import fs from 'node:fs';
 let initialized = false;
 let sequence = 0;
 const threads = new Map();
@@ -19,11 +20,16 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   return send({id,result:{thread:{id:threadId}}});
  }
  if (method === 'thread/resume') { threads.set(params.threadId, {resumed:true,cwd:params.cwd}); return send({id,result:{thread:{id:params.threadId}}}); }
+ if (method === 'turn/interrupt') {
+  if(process.env.INTERRUPT_MARKER) fs.writeFileSync(process.env.INTERRUPT_MARKER, JSON.stringify(params));
+  return send({id,result:{}});
+ }
  if (method === 'turn/start') {
   const text = params.input[0].text;
   if(text === 'crash') return process.exit(7);
   if(text === 'invalid') return process.stdout.write('not-json\n');
-  if(text === 'hold') return;
+  if(text === 'hold') return send({id,result:{turn:{id:'held-turn'}}});
+  if(!Array.isArray(params.input[0].text_elements)) return send({id,error:{code:-32602,message:'text_elements required'}});
   if(text === 'rpc-error') return send({id,error:{code:-32602,message:'Invalid turn'}});
   const turnId = `turn-${params.threadId}`;
   send({method:'item/completed',params:{threadId:params.threadId,turnId,item:{id:'message',type:'agentMessage',text:JSON.stringify({text,profile:threads.get(params.threadId)})}}});

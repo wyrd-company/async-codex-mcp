@@ -2,12 +2,13 @@
 // relationships:
 //   references: codex-client
 // ---
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/codex-client.js";
 import { loadConfig } from "../src/config.js";
 const clients: CodexAppServerClient[] = [];
-afterEach(async () => { await Promise.all(clients.splice(0).map(client => client.close())); });
+afterEach(async () => { vi.useRealTimers(); await Promise.all(clients.splice(0).map(client => client.close())); });
 function setup(args = [fileURLToPath(new URL("./fixtures/app-server.mjs", import.meta.url))]) {
  const config = loadConfig();
  config.codex.command = process.execPath;
@@ -54,6 +55,28 @@ describe("Codex app-server process adapter", () => {
  it("rejects malformed stdout and closes cleanly",async()=>{
   const {client,profile}=setup();
   await expect(client.callCodex(profile,{prompt:'invalid'})).rejects.toThrow(/invalid JSONL/);
+ });
+ it("retains the previous 60-second initialization limit",async()=>{
+  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+  const {client,profile}=setup(['-e','process.stdin.resume()']);
+  const assertion=expect(client.callCodex(profile,{prompt:'hello'})).rejects.toThrow(/initialize exceeded its 60s wait limit/);
+  await vi.advanceTimersByTimeAsync(60_000);
+  await assertion;
+ });
+ it("interrupts a timed-out turn",async()=>{
+  const directory=fs.mkdtempSync('/tmp/codex-interrupt-');
+  const marker=directory+'/interrupted.json';
+  const config=loadConfig();
+  config.codex.command=process.execPath;
+  config.codex.args=[fileURLToPath(new URL('./fixtures/app-server.mjs',import.meta.url))];
+  config.codex.env={INTERRUPT_MARKER:marker};
+  config.codex.requestTimeoutSec=1;
+  const client=new CodexAppServerClient(config); clients.push(client);
+  try {
+   await expect(client.callCodex(config.tools.codex,{prompt:'hold'})).rejects.toThrow(/exceeded codex.requestTimeoutSec/);
+   await expect.poll(()=>fs.existsSync(marker)).toBe(true);
+   expect(JSON.parse(fs.readFileSync(marker,'utf8'))).toEqual({threadId:'thread-1',turnId:'held-turn'});
+  } finally { await client.close();fs.rmSync(directory,{recursive:true,force:true}); }
  });
  it("names the interface when the executable is missing",async()=>{
   const config=loadConfig(); config.codex.command='/missing-codex-executable';

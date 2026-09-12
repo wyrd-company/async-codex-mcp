@@ -2,7 +2,8 @@
   "name": "Async Codex MCP",
   "image": "mcr.microsoft.com/devcontainers/base:noble",
   "features": {
-    "ghcr.io/devcontainers/features/node:2": {}
+    "ghcr.io/devcontainers/features/node:2": {},
+    "ghcr.io/wyrd-company/devcontainers/codex-cli:1": { "version": "0.154.0" }
   },
   "customizations": {
     "vscode": {

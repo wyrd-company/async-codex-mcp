@@ -1,46 +1,47 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 const options = parseArgs(process.argv.slice(2));
 
-const server = new McpServer(
-  { name: "async-codex-mcp-callback", version: "0.5.0" },
-  {
-    instructions:
-      "Use async_codex_ask_user only when you need a user answer before continuing. Use async_codex_notify_user for non-blocking progress updates or FYIs.",
-  },
-);
+const handle = serveStdio(() => {
+  const server = new McpServer(
+    { name: "async-codex-mcp-callback", version: "0.6.0" },
+    {
+      instructions:
+        "Use async_codex_ask_user only when you need a user answer before continuing. Use async_codex_notify_user for non-blocking progress updates or FYIs.",
+    },
+  );
 
-server.tool(
-  "async_codex_ask_user",
-  "Ask the user a blocking question. Codex waits until the user responds to the async session.",
-  {
-    message: z.string().min(1).describe("The question or problem that needs a user response."),
-    context: z.string().optional().describe("Optional context explaining why the answer is needed."),
-  },
-  async ({ message, context }) => {
-    const result = await postCallback<{ answer: string }>("/ask", { message, context });
-    return textResult(result.answer);
-  },
-);
+  server.registerTool(
+    "async_codex_ask_user",
+    { description: "Ask the user a blocking question. Codex waits until the user responds to the async session.", inputSchema: z.object({
+      message: z.string().min(1).describe("The question or problem that needs a user response."),
+      context: z.string().optional().describe("Optional context explaining why the answer is needed."),
+    }) },
+    async ({ message, context }) => {
+      const result = await postCallback<{ answer: string }>("/ask", { message, context });
+      return textResult(result.answer);
+    },
+  );
 
-server.tool(
-  "async_codex_notify_user",
-  "Send a non-blocking progress update or FYI to the user.",
-  {
-    message: z.string().min(1).describe("The progress update or FYI to send."),
-    topic: z.string().optional().describe("Optional free-text topic for the notification."),
-  },
-  async ({ message, topic }) => {
-    await postCallback("/notify", { message, topic });
-    return textResult("Notification delivered.");
-  },
-);
+  server.registerTool(
+    "async_codex_notify_user",
+    { description: "Send a non-blocking progress update or FYI to the user.", inputSchema: z.object({
+      message: z.string().min(1).describe("The progress update or FYI to send."),
+      topic: z.string().optional().describe("Optional free-text topic for the notification."),
+    }) },
+    async ({ message, topic }) => {
+      await postCallback("/notify", { message, topic });
+      return textResult("Notification delivered.");
+    },
+  );
 
-await server.connect(new StdioServerTransport());
+  return server;
+});
+process.stdin.once("end", () => { void handle.close(); });
 
 function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };

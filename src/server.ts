@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type ProtocolEra } from "@modelcontextprotocol/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,13 +29,14 @@ const answerShape = {
 export type CreateServerOptions = {
   client?: CodexClientLike;
   store?: SessionStore;
+  protocolEra?: ProtocolEra;
 };
 
 export function createServer(config: AsyncCodexConfig, options: CreateServerOptions = {}): McpServer {
   const server = new McpServer(
-    { name: "async-codex-mcp", version: "0.5.0" },
+    { name: "async-codex-mcp", version: "0.6.0" },
     {
-      capabilities: { logging: {}, experimental: { "claude/channel": {} } },
+      capabilities: options.protocolEra === "modern" ? {} : { logging: {}, experimental: { "claude/channel": {} } },
       instructions:
         "Starts Codex sub-agent sessions asynchronously. Profile tools return immediately with an async session id; use continue-session after completion to resume. " +
         'If this server runs as a Claude Code channel (requires an Anthropic account with channel support enabled), session events arrive as <channel source="async-codex-mcp" session_id="..." kind="...">. ' +
@@ -47,6 +48,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
         "Once it's running, stopping is allowed again; when it exits, check session-status: if a session is waiting_for_input, answer it with answer-session, then restart the watcher if others are still running.",
     },
   );
+  const notificationsEnabled = options.protocolEra !== "modern";
   const client = options.client ?? new CodexMcpClient(config);
   const store = options.store ?? new SessionStore();
   store.onChange = (current) => {
@@ -59,12 +61,12 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   const callbackHub = new CallbackHub({
     ask: async ({ sessionId, message, context }) => {
       const ask = store.ask(sessionId, { message, context });
-      await sendCallbackNotification(server, sessionId, "ask", message, { context });
+      if (notificationsEnabled) await sendCallbackNotification(server, sessionId, "ask", message, { context });
       return ask.response;
     },
     notify: async ({ sessionId, message, topic }) => {
       store.notify(sessionId, { message, topic });
-      await sendCallbackNotification(server, sessionId, "notify", message, { topic });
+      if (notificationsEnabled) await sendCallbackNotification(server, sessionId, "notify", message, { topic });
     },
   });
 
@@ -99,10 +101,9 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   };
 
   for (const [name, profile] of Object.entries(config.tools)) {
-    server.tool(
+    server.registerTool(
       name,
-      profile.description ?? `Start an asynchronous Codex session using the ${name} profile.`,
-      runShape,
+      { description: profile.description ?? `Start an asynchronous Codex session using the ${name} profile.`, inputSchema: z.object(runShape) },
       async ({ prompt, model, cwd }) => {
         const session = store.create({ toolName: name, prompt, model, cwd });
         const effectiveProfile = await prepareProfile(config, profile, session.id, callbackHub);
@@ -113,18 +114,18 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
             if (result.isError) {
               const message = errorMessageFromResult(result);
               store.fail(session.id, message, result);
-              await sendSessionNotification(server, session.id, "failed", undefined, message);
+              if (notificationsEnabled) await sendSessionNotification(server, session.id, "failed", undefined, message);
               return;
             }
 
             const codexSessionId = extractCodexSessionId(result);
             store.complete(session.id, result, codexSessionId);
-            await sendSessionNotification(server, session.id, "completed", codexSessionId);
+            if (notificationsEnabled) await sendSessionNotification(server, session.id, "completed", codexSessionId);
           })
           .catch(async (error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
             store.fail(session.id, message);
-            await sendSessionNotification(server, session.id, "failed", undefined, message);
+            if (notificationsEnabled) await sendSessionNotification(server, session.id, "failed", undefined, message);
           });
 
         return textResult(
@@ -142,10 +143,9 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     );
   }
 
-  server.tool(
+  server.registerTool(
     "session-status",
-    "Inspect an asynchronous Codex session by id.",
-    { session_id: z.string().min(1).describe("Async session id returned by a profile tool.") },
+    { description: "Inspect an asynchronous Codex session by id.", inputSchema: z.object({ session_id: z.string().min(1).describe("Async session id returned by a profile tool.") }) },
     async ({ session_id }) => {
       const session = store.get(session_id);
       if (!session) {
@@ -173,7 +173,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     },
   );
 
-  server.tool("continue-session", "Resume a completed async Codex session.", continueShape, async ({ session_id, prompt, cwd }) => {
+  server.registerTool("continue-session", { description: "Resume a completed async Codex session.", inputSchema: z.object(continueShape) }, async ({ session_id, prompt, cwd }) => {
     const session = store.get(session_id);
     if (!session) return textResult(`Unknown session: ${session_id}`, true);
     if (session.status !== "completed") return textResult(`Session ${session_id} is ${session.status}; only completed sessions can be continued.`, true);
@@ -188,7 +188,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
     }
   });
 
-  server.tool("answer-session", "Answer a Codex question for an async session waiting for input.", answerShape, async ({ session_id, message }) => {
+  server.registerTool("answer-session", { description: "Answer a Codex question for an async session waiting for input.", inputSchema: z.object(answerShape) }, async ({ session_id, message }) => {
     const session = store.get(session_id);
     if (!session) return textResult(`Unknown session: ${session_id}`, true);
     if (session.status !== "waiting_for_input") return textResult(`Session ${session_id} is ${session.status}; only waiting_for_input sessions can be answered.`, true);

@@ -2,11 +2,11 @@
 
 Async Codex MCP server.
 
-This package implements an MCP server that proxies a Codex MCP server and turns blocking `codex` calls into background sessions. Configured profile tools return immediately with an async session id; clients can inspect session state, receive completion events, and resume completed sessions even after Claude or the MCP server restarts.
+This package implements an MCP server that drives the Codex app-server and turns blocking `codex` calls into background sessions. Configured profile tools return immediately with an async session id; clients can inspect session state, receive completion events, and resume completed sessions even after Claude or the MCP server restarts.
 
 ## Why
 
-The Codex CLI can run as an MCP server with `codex mcp-server`, exposing blocking `codex` and `codex-reply` tools. This server wraps those tools to:
+The Codex CLI exposes a JSONL API through `codex app-server`. This server adapts its thread and turn APIs to:
 
 - expose named, opinionated profile tools from YAML configuration;
 - restrict caller-controlled inputs to `prompt`, `model`, and `cwd`;
@@ -14,7 +14,17 @@ The Codex CLI can run as an MCP server with `codex mcp-server`, exposing blockin
 - return immediately while Codex runs in the background;
 - persist the wrapper-to-Codex session mapping across MCP server restarts;
 - send MCP logging notifications when a background session completes or fails;
-- expose `continue-session` as a generic wrapper around `codex-reply`.
+- expose `continue-session` through `thread/resume` and `turn/start`.
+
+## Compatibility
+
+Requires Node.js 20 or later and a Codex CLI with the app-server v2 thread/turn API. Codex `0.153.4` and `0.154.0` are tested, including thread resumption after restarting the app-server process. Other releases are checked by the app-server initialization handshake, without a pinned runtime version check. A missing interface produces a named app-server startup error in `session-status`.
+
+The default command is `codex app-server`. An explicit legacy `mcp-server` argument in existing YAML is translated to `app-server`; custom command launchers remain supported. Profiles retain their model, working directory, sandbox, approval policy, instructions, and config overrides. `compactPrompt` maps to the Codex `compact_prompt` config key. Interactive app-server client requests are reported as unsupported; user questions use the callback tools described below.
+
+The stdio endpoint supports MCP `2026-07-28` through per-request metadata and `server/discover`, with legacy `initialize` fallback for `2025-11-25` and earlier SDK-supported revisions. Modern results include `resultType`. Unsupported modern versions return the protocol's supported-version error so clients can retry. Legacy clients retain logging and Claude channel notifications. Modern clients read background results through `session-status` or the watcher; the server does not send unsolicited modern notifications.
+
+Upstream contracts: [Codex app-server](https://developers.openai.com/codex/app-server) and [MCP versioning and compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle).
 
 ## Install
 
@@ -28,14 +38,14 @@ Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`
 
 Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also settable per tool under `tools.<name>.callbacks`) is passed to Codex as the callback MCP server's `tool_timeout_sec` — the ceiling on how long a blocking `async_codex_ask_user` call can wait for an answer. Without it, Codex aborts blocked asks at its default 60-second tool timeout and the session fails.
 
-`codex.requestTimeoutSec` (default 86400) sets the MCP request timeout for this server's own `codex`/`codex-reply` calls into the Codex MCP server. The SDK default is 60 seconds, which aborts any Codex run longer than a minute with `MCP error -32001`.
+`codex.requestTimeoutSec` (default 86400) sets the app-server request and turn wait limit. Turn notifications reset the turn wait limit.
 
 Example:
 
 ```yaml
 codex:
   command: codex
-  args: [mcp-server]
+  args: [app-server]
   env: {}
 
 tools:
@@ -49,7 +59,7 @@ tools:
     approvalPolicy: never
 ```
 
-Tool `config` values are passed through to the underlying Codex MCP `codex` tool as Codex config overrides. For example, this exposes a separate tool that routes through an Azure/OpenAI-compatible provider:
+Tool `config` values are passed through to the app-server `thread/start` request as Codex config overrides. For example, this exposes a separate tool that routes through an Azure/OpenAI-compatible provider:
 
 ```yaml
 tools:

@@ -55,6 +55,26 @@ describe("Codex app-server process adapter", () => {
   const {client,profile}=setup();
   await expect(client.callCodex(profile,{prompt:'invalid'})).rejects.toThrow(/invalid JSONL/);
  });
+ it("names the interface when the executable is missing",async()=>{
+  const config=loadConfig(); config.codex.command='/missing-codex-executable';
+  const client=new CodexAppServerClient(config); clients.push(client);
+  await expect(client.callCodex(config.tools.codex,{prompt:'hello'})).rejects.toThrow(/Cannot start Codex app-server/);
+ });
+ it("closes while initialization is still pending",async()=>{
+  const {client,profile}=setup(['-e','process.stdin.resume()']);
+  const pending=client.callCodex(profile,{prompt:'hello'});
+  const assertion=expect(pending).rejects.toThrow(/closed/);
+  await client.close();
+  await assertion;
+ });
+ it("uses app-server by default and translates explicit legacy launch arguments",async()=>{
+  expect(loadConfig().codex.args).toEqual(['app-server']);
+  const {client,profile}=setup(['-e','if(process.argv[1]!=="app-server")process.exit(2);import(process.env.APP_SERVER_FIXTURE)','--','mcp-server']);
+  // Test the actual argv delivered to the spawned child.
+  process.env.APP_SERVER_FIXTURE=new URL('./fixtures/app-server.mjs',import.meta.url).href;
+  try { await expect(client.callCodex(profile,{prompt:'hello'})).resolves.toMatchObject({_meta:{threadId:'thread-1'}}); }
+  finally { delete process.env.APP_SERVER_FIXTURE; }
+ });
  it("rejects pending work on shutdown",async()=>{
   const {client,profile}=setup();
   const pending=client.callCodex(profile,{prompt:'hold'});

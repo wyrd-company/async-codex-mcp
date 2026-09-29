@@ -44,10 +44,8 @@ Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also 
 Example:
 
 ```yaml
-codex:
-  command: codex
-  args: [app-server]
-  env: {}
+# Discover the existing app-server under CODEX_HOME.
+codex: {}
 
 tools:
   codex-write:

@@ -29,6 +29,12 @@ async function setup(options: Parameters<typeof appServerFixture>[0] = {}) {
   return { client, config, profile: config.tools.codex, fixture };
 }
 describe("Existing Codex app-server adapter", () => {
+  it("loads the shipped YAML configuration with default server discovery", () => {
+    const config = loadConfig(path.resolve("fixtures/async-codex-mcp.yaml"));
+    expect(config.codex.endpoint).toBeUndefined();
+    expect(config.codex.requestTimeoutSec).toBe(86400);
+    expect(config.tools["codex-review"].sandboxMode).toBe("read-only");
+  });
   it("maps profiles and preserves thread IDs when completion precedes the start response", async () => {
     const { client, profile } = await setup();
     const result = await client.callCodex(

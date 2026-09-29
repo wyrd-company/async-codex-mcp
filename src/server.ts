@@ -226,7 +226,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
       await runtime.done;
       return textResult(JSON.stringify({ session_id, status: store.get(session_id)?.status }));
     } catch (error) {
-      runtime.stopping = false;
+      // The wrapper round still ends even when native cancellation cannot be confirmed.
+      await runtime.done;
       return textResult(error instanceof Error ? error.message : String(error), true);
     }
   });

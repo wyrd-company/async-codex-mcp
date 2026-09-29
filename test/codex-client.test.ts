@@ -197,6 +197,20 @@ describe("Existing Codex app-server adapter", () => {
         .map((request) => request.params),
     ).toEqual([{ threadId: "thread-1", turnId: "turn-thread-1" }]);
   });
+  it("reports a rejected pending start instead of confirming native cancellation", async () => {
+    const { client, profile, fixture } = await setup({ delayTurnStart: true });
+    const result = expect(
+      client.callCodex(profile, { prompt: "hold" }),
+    ).rejects.toThrow(/Unconfirmed start/);
+    await expect.poll(() => fixture.held.has("hold")).toBe(true);
+    const stopped = expect(client.stop()).rejects.toThrow(/Unconfirmed start/);
+    const start = fixture.requests.find(
+      (request) => request.method === "turn/start",
+    );
+    fixture.notify({ id: start.id, error: { message: "Unconfirmed start" } });
+    await stopped;
+    await result;
+  });
   it("prevents a turn after stopping during thread creation", async () => {
     const { client, profile, fixture } = await setup({
       delayThreadStart: true,

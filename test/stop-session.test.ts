@@ -24,9 +24,12 @@ afterEach(async () => {
   if (fixture) await fixture.close();
   fs.rmSync(directory, { recursive: true, force: true });
 });
-async function setup(initializing = false) {
+async function setup(initializing = false, rejectInterrupt = false) {
   const config = loadConfig();
-  fixture = await appServerFixture({ holdInitialize: initializing });
+  fixture = await appServerFixture({
+    holdInitialize: initializing,
+    rejectInterrupt,
+  });
   config.codex.endpoint = fixture.endpoint;
   const store = new SessionStore({
     directory: path.join(directory, "sessions"),
@@ -177,6 +180,21 @@ describe("stop-session", () => {
       fixture.requests.some((request) => request.method === "thread/start"),
     ).toBe(false);
     expect(store.get(id)?.status).toBe("stopped");
+  });
+  it("ends the wrapper round when native interruption fails", async () => {
+    const { client, store } = await setup(false, true);
+    const id = payload(
+      await client.callTool("codex", { prompt: "hold:alpha" }),
+    ).session_id;
+    await marker("alpha");
+    const result = await client.callTool("stop-session", { session_id: id });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Interruption rejected");
+    expect(store.get(id)?.status).toBe("stopped");
+    expect(
+      new SessionStore({ directory: path.join(directory, "sessions") }).get(id)
+        ?.status,
+    ).toBe("stopped");
   });
   it("rejects unknown, terminal and foreign live records without mutation", async () => {
     const { client, store } = await setup();

@@ -434,7 +434,11 @@ class AppServerConnection {
     try {
       // A start may have reached the server before its turn ID is acknowledged.
       // Keep the socket open until we can interrupt precisely that owned turn.
-      await Promise.allSettled([...this.starts]);
+      const starts = await Promise.allSettled([...this.starts]);
+      const rejectedStart = starts.find(
+        (result) => result.status === "rejected",
+      );
+      if (rejectedStart?.status === "rejected") throw rejectedStart.reason;
       for (const [threadId, turn] of this.turns) this.interrupt(threadId, turn);
       await Promise.all([...this.interrupts]);
     } finally {

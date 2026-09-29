@@ -48,6 +48,15 @@ type Turn = {
   timer: NodeJS.Timeout;
 };
 
+class AppServerRpcError extends Error {
+  constructor(
+    readonly code: number | undefined,
+    message: string,
+  ) {
+    super(`Codex app-server: ${message}`);
+  }
+}
+
 /** Connects to an existing Codex app-server; never owns the server process. */
 export class CodexAppServerClient implements CodexClientLike {
   private connection?: Promise<AppServerConnection>;
@@ -313,7 +322,38 @@ class AppServerConnection {
       const request = this.request("turn/interrupt", {
         threadId,
         turnId: turn.id,
-      }).then(() => {});
+      })
+        .then(() => {})
+        .catch(async (error) => {
+          // Native Codex rejects interruption if completion won the race. Recover
+          // the exact terminal turn before closing, even if its notification lags.
+          if (
+            !(error instanceof AppServerRpcError) ||
+            error.code !== -32600 ||
+            error.message !== "Codex app-server: no active turn to interrupt"
+          )
+            throw error;
+          if (!this.turns.has(threadId)) return;
+          const result = await this.request("thread/read", {
+            threadId,
+            includeTurns: true,
+          });
+          const completed =
+            result?.thread?.id === threadId
+              ? result.thread.turns?.find(
+                  (candidate: any) =>
+                    candidate.id === turn.id &&
+                    ["completed", "failed", "interrupted"].includes(
+                      candidate.status,
+                    ),
+                )
+              : undefined;
+          if (!completed) throw error;
+          this.receive({
+            method: "turn/completed",
+            params: { threadId, turn: completed },
+          });
+        });
       this.interrupts.add(request);
       void request
         .catch(() => {})
@@ -340,7 +380,9 @@ class AppServerConnection {
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
       if (message.error)
-        pending.reject(new Error(`Codex app-server: ${message.error.message}`));
+        pending.reject(
+          new AppServerRpcError(message.error.code, message.error.message),
+        );
       else pending.resolve(message.result);
       return;
     }

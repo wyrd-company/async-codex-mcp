@@ -24,11 +24,16 @@ afterEach(async () => {
   if (fixture) await fixture.close();
   fs.rmSync(directory, { recursive: true, force: true });
 });
-async function setup(initializing = false, rejectInterrupt = false) {
+async function setup(
+  initializing = false,
+  rejectInterrupt = false,
+  terminalRace?: "before" | "after",
+) {
   const config = loadConfig();
   fixture = await appServerFixture({
     holdInitialize: initializing,
     rejectInterrupt,
+    terminalRace,
   });
   config.codex.endpoint = fixture.endpoint;
   const store = new SessionStore({
@@ -180,6 +185,26 @@ describe("stop-session", () => {
       fixture.requests.some((request) => request.method === "thread/start"),
     ).toBe(false);
     expect(store.get(id)?.status).toBe("stopped");
+  });
+  it("persists completed output when native completion wins the stop race", async () => {
+    const { client, store } = await setup(false, false, "after");
+    const id = payload(
+      await client.callTool("codex", { prompt: "hold:alpha" }),
+    ).session_id;
+    await marker("alpha");
+    const result = await client.callTool("stop-session", { session_id: id });
+    expect(result.isError).not.toBe(true);
+    expect(payload(result)).toEqual({ session_id: id, status: "completed" });
+    const saved = new SessionStore({
+      directory: path.join(directory, "sessions"),
+    }).get(id);
+    expect(saved).toMatchObject({
+      status: "completed",
+      result: {
+        content: [{ type: "text", text: "Completed before interrupt." }],
+      },
+    });
+    expect(store.get(id)?.status).toBe("completed");
   });
   it("ends the wrapper round when native interruption fails", async () => {
     const { client, store } = await setup(false, true);

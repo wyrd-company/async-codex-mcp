@@ -248,6 +248,22 @@ describe("Existing Codex app-server adapter", () => {
       fixture.requests.some((request) => request.method === "turn/interrupt"),
     ).toBe(true);
   });
+  it.each(["before", "after"] as const)(
+    "preserves terminal output when completion arrives %s the interrupt error",
+    async (terminalRace) => {
+      const { client, profile, fixture } = await setup({ terminalRace });
+      const result = client.callCodex(profile, { prompt: "hold" });
+      await expect.poll(() => fixture.held.has("hold")).toBe(true);
+      await expect(client.stop()).resolves.toBeUndefined();
+      expect((await result).content).toEqual([
+        { type: "text", text: "Completed before interrupt." },
+      ]);
+      if (terminalRace === "after")
+        expect(
+          fixture.requests.some((request) => request.method === "thread/read"),
+        ).toBe(true);
+    },
+  );
   it("reports failed native cancellation instead of confirming stop", async () => {
     const { client, profile, fixture } = await setup({ rejectInterrupt: true });
     const result = expect(

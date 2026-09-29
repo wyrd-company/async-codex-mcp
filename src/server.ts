@@ -126,7 +126,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
       const result = resume
         ? await client.continueSession(session.codexSessionId!, session.prompt, session.cwd, effectiveProfile)
         : await client.callCodex(effectiveProfile, { prompt: session.prompt, model: session.model, cwd: session.cwd });
-      if (runtime.stopping) return textResult("Session stopped.", true);
+      if (runtime.stopping && result.isError) return textResult("Session stopped.", true);
       if (result.isError) store.fail(session.id, errorMessageFromResult(result), result, round);
       else store.complete(session.id, result, extractCodexSessionId(result), round);
       return result;

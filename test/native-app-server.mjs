@@ -157,6 +157,19 @@ try {
     cwd: "/tmp",
   });
   assert.deepEqual(first.content, [{ type: "text", text: "Sample result." }]);
+  const terminal = await rpc("thread/read", {
+    threadId: first._meta.threadId,
+    includeTurns: true,
+  });
+  assert.equal(terminal.thread.turns.at(-1).status, "completed");
+  assert.ok(
+    terminal.thread.turns
+      .at(-1)
+      .items.some(
+        (item) =>
+          item.type === "agentMessage" && item.text === "Sample result.",
+      ),
+  );
   await rpc("thread/resume", { threadId: first._meta.threadId });
   await a.close();
   const second = await client().continueSession(

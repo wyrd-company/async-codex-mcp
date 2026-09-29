@@ -15,6 +15,7 @@ export async function appServerFixture(
     delayTurnStart?: boolean;
     delayThreadStart?: boolean;
     rejectInterrupt?: boolean;
+    terminalRace?: "before" | "after";
   } = {},
 ) {
   const directory = fs.mkdtempSync(
@@ -24,6 +25,7 @@ export async function appServerFixture(
   const httpServer = http.createServer();
   const server = new WebSocketServer({ server: httpServer });
   const threads = new Map<string, any>();
+  const terminalTurns = new Map<string, any>();
   const requests: any[] = [];
   const held = new Map<
     string,
@@ -56,6 +58,7 @@ export async function appServerFixture(
         },
       },
     };
+    terminalTurns.set(threadId, notification.params.turn);
     for (const client of server.clients) send(client, notification);
   };
   server.on("connection", (socket) => {
@@ -111,12 +114,51 @@ export async function appServerFixture(
         else reply();
         return;
       }
+      if (method === "thread/read") {
+        send(socket, {
+          id,
+          result: {
+            thread: {
+              id: params.threadId,
+              turns: [terminalTurns.get(params.threadId)],
+            },
+          },
+        });
+        return;
+      }
       if (method === "thread/unsubscribe") {
         subscribers.get(params.threadId)?.delete(socket);
         send(socket, { id, result: { status: "unsubscribed" } });
         return;
       }
       if (method === "turn/interrupt") {
+        if (options.terminalRace) {
+          const completed = {
+            id: params.turnId,
+            status: "completed",
+            items: [
+              {
+                id: "race-output",
+                type: "agentMessage",
+                text: "Completed before interrupt.",
+              },
+            ],
+          };
+          terminalTurns.set(params.threadId, completed);
+          if (options.terminalRace === "before") {
+            for (const client of server.clients)
+              send(client, {
+                method: "turn/completed",
+                params: { threadId: params.threadId, turn: completed },
+              });
+          }
+          send(socket, {
+            id,
+            error: { code: -32600, message: "no active turn to interrupt" },
+          });
+          return;
+        }
+
         if (options.rejectInterrupt) {
           send(socket, { id, error: { message: "Interruption rejected" } });
           return;

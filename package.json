@@ -39,12 +39,14 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "js-yaml": "^4.1.1",
+    "ws": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@openai/codex": "^0.154.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.15.3",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.25.0",
     "mcp-testing-kit": "^0.2.0",
     "typescript": "^5.8.3",

@@ -210,7 +210,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   });
 
   server.registerTool("stop-session", {
-    description: "Stop a running or waiting session owned by this MCP server. Waits for its Codex process to exit.",
+    description: "Stop a running or waiting session owned by this MCP server. Interrupts its owned Codex turn and closes its callback round.",
     inputSchema: z.object({ session_id: z.string().min(1) }),
   }, async ({ session_id }) => {
     const session = store.get(session_id);

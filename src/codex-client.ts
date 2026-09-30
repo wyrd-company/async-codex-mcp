@@ -225,7 +225,7 @@ class AppServerConnection {
     try {
       await this.request(
         "initialize",
-        { clientInfo: { name: "async_codex_mcp", version: "0.7.1" } },
+        { clientInfo: { name: "async_codex_mcp", version: "0.8.0" } },
         DEFAULT_REQUEST_TIMEOUT_MSEC,
       );
       this.send({ method: "initialized", params: {} });

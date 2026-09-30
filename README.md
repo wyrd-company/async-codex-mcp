@@ -224,7 +224,7 @@ Because it's a normal background process, the harness notifies Claude when it ex
 
 ## Publishing
 
-The package is published publicly to npm as `@wyrd-company/async-codex-mcp`. Publishing is handled by the `Publish Package` GitHub Actions workflow, which runs tests, builds the package, and publishes with the repository `NPM_TOKEN` secret.
+The package is published publicly to npm as `@wyrd-company/async-codex-mcp`. Publishing is handled by the `Publish Package` GitHub Actions workflow, which runs tests, builds the package, and publishes through npm trusted publishing with GitHub Actions OIDC.
 
 Run it manually from GitHub Actions, or push a SemVer tag without a `v` prefix, for example `0.1.0`.
 

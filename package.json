@@ -1,6 +1,6 @@
 {
   "name": "@wyrd-company/async-codex-mcp",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Async MCP proxy for Codex MCP server profiles",
   "type": "module",
   "bin": {

@@ -126,7 +126,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
       const result = resume
         ? await client.continueSession(session.codexSessionId!, session.prompt, session.cwd, effectiveProfile)
         : await client.callCodex(effectiveProfile, { prompt: session.prompt, model: session.model, cwd: session.cwd });
-      if (runtime.stopping) return textResult("Session stopped.", true);
+      if (runtime.stopping && result.isError) return textResult("Session stopped.", true);
       if (result.isError) store.fail(session.id, errorMessageFromResult(result), result, round);
       else store.complete(session.id, result, extractCodexSessionId(result), round);
       return result;
@@ -210,7 +210,7 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
   });
 
   server.registerTool("stop-session", {
-    description: "Stop a running or waiting session owned by this MCP server. Waits for its Codex process to exit.",
+    description: "Stop a running or waiting session owned by this MCP server. Interrupts its owned Codex turn and closes its callback round.",
     inputSchema: z.object({ session_id: z.string().min(1) }),
   }, async ({ session_id }) => {
     const session = store.get(session_id);
@@ -226,7 +226,8 @@ export function createServer(config: AsyncCodexConfig, options: CreateServerOpti
       await runtime.done;
       return textResult(JSON.stringify({ session_id, status: store.get(session_id)?.status }));
     } catch (error) {
-      runtime.stopping = false;
+      // The wrapper round still ends even when native cancellation cannot be confirmed.
+      await runtime.done;
       return textResult(error instanceof Error ? error.message : String(error), true);
     }
   });

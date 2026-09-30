@@ -8,6 +8,13 @@ const stringRecordSchema = z.record(z.string(), z.string());
 const unknownRecordSchema = z.record(z.string(), z.unknown());
 
 const codexServerSchema = z.object({
+  endpoint: z
+    .string()
+    .refine(
+      (value) => /^unix:\/\/\//.test(value) || /^wss?:\/\//.test(value),
+      "endpoint must be unix:///absolute/path, ws://, or wss://",
+    )
+    .optional(),
   command: z.string().default("codex"),
   args: z.array(z.string()).default(["app-server"]),
   env: stringRecordSchema.default({}),

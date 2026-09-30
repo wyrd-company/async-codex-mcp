@@ -6,7 +6,7 @@ This package implements an MCP server that drives the Codex app-server and turns
 
 ## Why
 
-The Codex CLI exposes a JSONL API through `codex app-server`. This server adapts its thread and turn APIs to:
+The Codex CLI exposes its thread and turn API through an existing `codex app-server`. This server adapts its thread and turn APIs to:
 
 - expose named, opinionated profile tools from YAML configuration;
 - restrict caller-controlled inputs to `prompt`, `model`, and `cwd`;
@@ -14,16 +14,17 @@ The Codex CLI exposes a JSONL API through `codex app-server`. This server adapts
 - return immediately while Codex runs in the background;
 - persist the wrapper-to-Codex session mapping across MCP server restarts;
 - send MCP logging notifications when a background session completes or fails;
-- expose `continue-session` through `thread/resume` and `turn/start`.
+- expose `continue-session` through `thread/fork` and `turn/start`.
 
 ## Compatibility
 
-Requires Node.js 20 or later and a Codex CLI with the app-server v2 thread/turn API. Codex `0.153.4` and `0.154.0` are tested, including thread resumption after restarting the app-server process. Other releases are checked by the app-server initialization handshake, without a pinned runtime version check. A missing interface produces a named app-server startup error in `session-status`.
+Requires Node.js 20 or later and a running Codex app-server with a WebSocket control socket and the v2 thread/turn API. The wrapper connects directly; it never launches or stops the server process. The `codex-cli:2` Dev Container Feature starts the server under S6. Outside that Feature, start a server with `codex app-server --listen unix://` before using the MCP.
 
-The default command is `codex app-server`. An explicit legacy `mcp-server` argument in existing YAML is translated to `app-server`; custom command launchers remain supported. Profiles retain their model, working directory, sandbox, approval policy, instructions, and config overrides. `compactPrompt` maps to the Codex `compact_prompt` config key. Interactive app-server client requests are reported as unsupported; user questions use the callback tools described below.
+By default the wrapper discovers the canonical `$CODEX_HOME/app-server-control/app-server-control.sock`. `CODEX_HOME` defaults to `~/.codex`. Use the same user profile for the service, TUI, and MCP. `codex.endpoint` or `CODEX_APP_SERVER_URL` can select an explicit `unix:///absolute/path`, `ws://`, or `wss://` endpoint. Missing or unavailable servers produce a connection error in `session-status` without spawning a fallback server.
 
-The stdio endpoint supports MCP `2026-07-28` through per-request metadata and `server/discover`, with legacy `initialize` fallback for `2025-11-25` and earlier SDK-supported revisions. Modern results include `resultType`. Unsupported modern versions return the protocol's supported-version error so clients can retry. Legacy clients retain logging and Claude channel notifications. Modern clients read background results through `session-status` or the watcher; the server does not send unsolicited modern notifications.
+Profiles retain their model, working directory, sandbox, approval policy, instructions, and config overrides. The default working directory is `codex.cwd` or the MCP process's working directory, so that the service's startup directory does not select the workspace. `compactPrompt` maps to Codex's `compact_prompt` config key. Interactive app-server client requests are reported as unsupported; user questions use the callback tools described below.
 
+The server owns its startup environment. `codex.env` supplies `CODEX_HOME`, `HOME`, and `CODEX_APP_SERVER_URL` for connection discovery; it cannot change a running server's environment. Legacy `codex.command` and `codex.args` are accepted for configuration compatibility but do not launch a process.
 Upstream contracts: [Codex app-server](https://developers.openai.com/codex/app-server) and [MCP versioning and compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle).
 
 ## Install
@@ -38,15 +39,13 @@ Pass a YAML file path as the first CLI argument, or set `ASYNC_CODEX_MCP_CONFIG`
 
 Callbacks are enabled by default. `callbacks.askTimeoutSec` (default 3600, also settable per tool under `tools.<name>.callbacks`) is passed to Codex as the callback MCP server's `tool_timeout_sec` — the ceiling on how long a blocking `async_codex_ask_user` call can wait for an answer. Without it, Codex aborts blocked asks at its default 60-second tool timeout and the session fails.
 
-`codex.requestTimeoutSec` (default 86400) sets the app-server request and turn wait limit. Turn notifications reset the turn wait limit; expiry requests a turn interruption. Initialization retains the previous 60-second SDK connection limit. Codex diagnostics go to stderr, separate from tool results.
+`codex.requestTimeoutSec` (default 86400) sets the app-server request and turn wait limit. Turn notifications reset the turn wait limit; expiry requests a turn interruption. Initialization retains the previous 60-second SDK connection limit. Codex service diagnostics stay in its service logs; connection errors appear in session results.
 
 Example:
 
 ```yaml
-codex:
-  command: codex
-  args: [app-server]
-  env: {}
+# Discover the existing app-server under CODEX_HOME.
+codex: {}
 
 tools:
   codex-write:
@@ -242,10 +241,12 @@ The test suite uses ThoughtSpot's `mcp-testing-kit` transport approach to exerci
 
 A session retains its wrapper ID and native Codex thread ID across continuations. `round` starts at 1 and increases for each continuation. `session-status` reports the current round; a running continuation clears the previous result, then stores its new result or failure. Continuation remains a blocking MCP call. Channels and the watcher also observe its running, waiting, and terminal transitions.
 
-Each active round owns an app-server process. A continuation resumes the durable native thread in a fresh process with current callback configuration. This avoids the app-server behavior that ignores configuration overrides on already-loaded threads. Callback processes receive a round-scoped lifecycle response when the round ends and exit even if their stdin remains open. Delayed callbacks from an earlier round cannot change the current round.
+Each active round owns a connection to the shared app-server. A continuation forks the durable native thread with the current callback configuration and preserves its history. The async `session_id` stays the same; the native Codex thread ID changes and is stored with the completed round. Forking applies new callback arguments even when another client remains subscribed to the original thread. Callback processes receive a round-scoped lifecycle response when the round ends and exit even if their stdin remains open. Delayed callbacks from an earlier round cannot change the current round.
 
 ### Stopping a session
 
-Call `stop-session` with `session_id` to stop a `running` or `waiting_for_input` session through the MCP server that owns its active round. The tool terminates that round's app-server process and waits for process exit before returning `stopped`. Other sessions keep their own processes. Pending questions are rejected, callbacks close, and `stopped` is terminal for notifications, the Stop hook, and the watcher. Unknown or terminal sessions return an error without changing the record; `answer-session` and `continue-session` reject stopped sessions.
+Call `stop-session` with `session_id` to stop a `running` or `waiting_for_input` session through the MCP server that owns its active round. The tool interrupts that round's native turn with `turn/interrupt` and closes its connection. The shared server and other sessions remain available. If native completion wins the interruption race, stop preserves the completed result and returns `completed`. Pending questions are rejected, callbacks close, and `stopped` is terminal for notifications, the Stop hook, and the watcher. Unknown or terminal sessions return an error without changing the record; `answer-session` and `continue-session` reject stopped sessions.
 
-The app-server exposes `turn/interrupt`, which requires a thread and turn ID. Explicit stop uses process termination so it also works during initialization, before those IDs exist. On POSIX systems, the round owns a process group and stop sends `SIGKILL` to that group. On Windows, stop terminates the app-server child process. Stop cannot undo completed side effects or guarantee termination of independently detached or remote work. Custom injected library clients must implement `stop()` with isolated ownership to expose this operation. Normal cleanup sends `SIGTERM` and waits for exit; a custom launcher that ignores that signal can delay cleanup.
+Before a turn starts, stop closes the connection and prevents work from starting. When `turn/start` is already pending, stop waits for its response so that it can interrupt the exact owned turn. Existing request limits apply. A disconnected server, rejected pending start, or failed interruption prevents confirmation of native cancellation and returns an error. The wrapper round still closes and becomes `stopped`, so its callbacks and session observers do not report live work. Stop cannot undo completed side effects or guarantee termination of child processes, independently detached work, or remote work. Custom injected library clients must implement `stop()` with isolated ownership to expose this operation. Normal cleanup also interrupts owned active turns before closing the connection.
+
+The optional native integration probe runs against an existing server with a synthetic local model provider and callback server. After `npm run build`, set `CODEX_APP_SERVER_URL` to a Unix socket and run `node test/native-app-server.mjs` in the same network namespace as the server. It verifies shared turns, forked history, refreshed callback tools, isolated interruption, and an attached observer.

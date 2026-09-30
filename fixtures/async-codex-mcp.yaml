@@ -1,6 +1,5 @@
-codex:
-  command: codex
-  args: [app-server]
+# Discover the existing app-server under CODEX_HOME.
+codex: {}
 tools:
   codex-write:
     description: Run Codex asynchronously with full filesystem access.

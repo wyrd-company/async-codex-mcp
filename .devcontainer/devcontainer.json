@@ -1,9 +1,9 @@
 {
   "name": "Async Codex MCP",
-  "image": "mcr.microsoft.com/devcontainers/base:noble",
+  "image": "ghcr.io/wyrd-company/devcontainers/base:noble",
   "features": {
     "ghcr.io/devcontainers/features/node:2": {},
-    "ghcr.io/wyrd-company/devcontainers/codex-cli:1": { "version": "0.154.0" }
+    "ghcr.io/wyrd-company/devcontainers/codex-cli:2": {}
   },
   "customizations": {
     "vscode": {
@@ -37,8 +37,11 @@
   "shutdownAction": "none",
 
   "runArgs": [
-    "--name", "async-codex-mcp-${devcontainerId}",
-    "-h", "${devcontainerId}",
-    "-l", "devcontainer.id=${devcontainerId}"
+    "--name",
+    "async-codex-mcp-${devcontainerId}",
+    "-h",
+    "${devcontainerId}",
+    "-l",
+    "devcontainer.id=${devcontainerId}"
   ]
 }
